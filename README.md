@@ -899,7 +899,7 @@ HomeTrove 的真正价值在插件与模型，但 **「壳」不稳就谈不上�
 
 ### 13.2 阶段 M0：基础框架（先完成这一步）
 
-> **实现状态（2026-08-04）：M0 代码已实现并通过本地冒烟验证，且只需 Python 环境即可运行（无需 Docker / Node）。** 后端（`hometrove/` 包：scanner / orchestrator(DAG) / plugins / uploads / api / worker / events）+ 前端骨架（`web/`，React + Vite，构建产物 `web/dist` 由 API 直接托管）+ 文档（`docs/INSTALL.md`、`docs/DEV.md`、`scripts/entrypoint`）均位于本仓库；分片上传/断点续传接口为 M0 内额外实现（超出 §13.2.2 清单）。运行方式：`pip install -e .` 后 `hometrove serve`（单进程同时起 API+worker）即可，`hometrove scan` 触发扫描。已验证：扫描 → 入库 → basic.info 插件产出 → jobs 全跑通（26 文件 26 job 全 done 0 failed）→ 时间轴 / 文件夹 / 健康 API 返回正常 → 前端静态托管与 SPA 路由正常 → 10MB 分片上传中断后断点续传 + 幂等重传 + sha256 合并通过。Docker 已降级为可选（§11.5），多架构镜像构建不再作为 M0 必做项。缩略图为 M1 范围。详细清单见 §13.2.2 验收口径逐项核对。
+ > **实现状态（2026-08-04）：M0 代码已实现并通过本地冒烟验证，且只需 Python 环境即可运行（无需 Docker / Node）。** 后端（`hometrove/` 包：scanner / orchestrator(DAG) / plugins / uploads / api / worker / events）+ 前端骨架（`web/`，React + Vite，构建产物 `web/dist` 由 API 直接托管）+ 文档（`docs/INSTALL.md`、`docs/DEV.md`、`scripts/entrypoint`）均位于本仓库；分片上传/断点续传接口为 M0 内额外实现（超出 §13.2.2 清单）。运行方式：`pip install -e .` 后 `hometrove serve`（单进程同时起 API+worker）即可，`hometrove scan` 触发扫描。已验证：扫描 → 入库 → basic.info + mock.tags / mock.category / mock.faces 插件产出 → jobs 全跑通 → 时间轴 / 文件夹 / 标签 / 分类 / 人脸 / 文件详情（动态字段渲染全部插件结果）/ 上传 / 任务中心 页面正常 → 前端静态托管与 SPA 路由正常 → 分片上传断点续传 + 幂等重传 + sha256 合并通过 → `/api/facets` 聚合与按标签/分类/人脸过滤资产通过。Docker 已降级为可选（§11.5）。缩略图与真实标签/分类/人脸插件为 M1 范围。详细清单见 §13.2.2 验收口径逐项核对。
 
 #### 13.2.1 目标
 

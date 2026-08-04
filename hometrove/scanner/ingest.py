@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from hometrove.models import Asset, Job
+from hometrove.models import Asset
 from hometrove.plugins.builtin.basic_info import classify
 from hometrove.scanner import hash_prefix
 from hometrove.config import get_settings
@@ -57,25 +57,6 @@ def ingest_file(session: Session, src: Path) -> int:
         session.add(asset)
         session.commit()
 
-    now = int(time.time())
-    live = (
-        session.query(Job)
-        .filter(
-            Job.asset_id == asset.id,
-            Job.plugin_id == "basic.info",
-            Job.state.in_(["pending", "running"]),
-        )
-        .first()
-    )
-    if live is None:
-        session.add(
-            Job(
-                asset_id=asset.id,
-                plugin_id="basic.info",
-                state="pending",
-                est_cost=0.02,
-                enqueued_at=now,
-            )
-        )
-        session.commit()
+    from hometrove.scanner import enqueue_pending
+    enqueue_pending(session)
     return asset.id

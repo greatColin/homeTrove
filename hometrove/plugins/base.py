@@ -14,6 +14,10 @@ from pydantic import BaseModel
 from hometrove.plugins.api import AssetLike, Cost, PluginContext
 
 
+class EmptyParams(BaseModel):
+    """Default params model for plugins that expose no knobs."""
+
+
 class BasePlugin:
     """All HomeTrove plugins extend this.
 
@@ -29,8 +33,8 @@ class BasePlugin:
     depends_on: ClassVar[list[str]] = []
 
     # If a subclass needs to expose user-tunable params it sets ParamsModel.
-    # M0's ``basic.info`` only has booleans, so it uses the default.
-    ParamsModel: ClassVar[type[BaseModel]] = BaseModel
+    # Default is a concrete empty model so ``model_validate({})`` always works.
+    ParamsModel: ClassVar[type[BaseModel]] = EmptyParams
 
     # ----- overridable hooks -----
 

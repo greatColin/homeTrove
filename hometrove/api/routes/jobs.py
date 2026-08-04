@@ -133,7 +133,7 @@ def trigger_scan(session: Session = Depends(get_db)):
     """
     # Local imports to avoid pulling config/settings at import-time.
     from hometrove.config import get_settings
-    from hometrove.scanner import discover, enqueue_basic_info, upsert_assets
+    from hometrove.scanner import discover, enqueue_pending, upsert_assets
 
     settings = get_settings()
     roots = settings.media_roots_paths
@@ -141,7 +141,7 @@ def trigger_scan(session: Session = Depends(get_db)):
         return {"new": 0, "skipped": 0, "enqueued": 0, "note": "no media roots configured"}
     discovered = list(discover(roots))
     new, skipped = upsert_assets(session, discovered)
-    enqueued = enqueue_basic_info(session)
+    enqueued = enqueue_pending(session)
     return {"new": new, "skipped": skipped, "enqueued": enqueued}
 
 

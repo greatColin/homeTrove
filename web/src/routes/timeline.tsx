@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api, mediaLabel, type AssetDTO } from "../lib/api";
 
 function Thumb({ asset, onClick }: { asset: AssetDTO; onClick: (a: AssetDTO) => void }) {
@@ -72,6 +73,13 @@ function Lightbox({ asset, onClose }: { asset: AssetDTO; onClose: () => void }) 
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 truncate text-xs text-white/70">
         {asset.path.split("\0").pop()}
       </div>
+      <Link
+        to={`/asset/${asset.id}`}
+        className="absolute right-4 top-4 rounded-full bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/20"
+        onClick={(e) => e.stopPropagation()}
+      >
+        详情
+      </Link>
     </div>
   );
 }

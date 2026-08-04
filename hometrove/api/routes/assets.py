@@ -17,6 +17,59 @@ from hometrove.models import Asset, PluginResult
 router = APIRouter(prefix="/api", tags=["assets"])
 
 
+# Which plugin result feeds which facet filter. Keyed by the facet name used
+# in ``/api/assets?tags=..`` etc.; the value is the plugin id that produces it.
+_FACET_PLUGIN = {
+    "tags": "mock.tags",
+    "category": "mock.category",
+    "person": "mock.faces",
+}
+
+
+def _facet_asset_ids(session: Session, facet: str, value: str) -> list[int]:
+    """Asset ids whose facet plugin result contains ``value``.
+
+    Uses a JSON substring match on ``result_json`` — precise enough for M0's
+    small libraries and works on any SQL backend. The facet plugins write
+    values as JSON string keys.
+    """
+    plugin_id = _FACET_PLUGIN.get(facet)
+    if plugin_id is None:
+        raise HTTPException(400, f"unknown facet {facet!r}")
+    rows = session.execute(
+        select(PluginResult.asset_id).where(
+            PluginResult.plugin_id == plugin_id,
+            PluginResult.result_json.contains(f'"{value}"'),
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+def _plugin_results(session: Session, asset_id: int) -> dict[str, dict]:
+    """All plugin outputs for an asset, keyed by plugin id."""
+    rows = (
+        session.execute(
+            select(PluginResult).where(PluginResult.asset_id == asset_id)
+        )
+        .scalars()
+        .all()
+    )
+    out: dict[str, dict] = {}
+    for pr in rows:
+        try:
+            data = json.loads(pr.result_json or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        out[pr.plugin_id] = {
+            "status": pr.status,
+            "version": pr.plugin_version,
+            "elapsed_ms": pr.elapsed_ms,
+            "finished_at": pr.finished_at,
+            "data": data,
+        }
+    return out
+
+
 def _to_asset_dto(a: Asset, *, basic: Optional[dict] = None) -> dict:
     return {
         "id": a.id,
@@ -38,11 +91,25 @@ def list_assets(
     media_type: Optional[str] = Query(None, pattern="^(image|video|other)$"),
     cursor: Optional[int] = None,
     limit: int = Query(60, ge=1, le=500),
+    tag: Optional[str] = None,
+    category: Optional[str] = None,
+    person: Optional[str] = None,
     session: Session = Depends(get_db),
 ):
     stmt = select(Asset)
     if media_type:
         stmt = stmt.where(Asset.media_type == media_type)
+
+    # Facet filters narrow the result set to assets whose plugin output
+    # contains the selected value.
+    facet_ids: set[int] | None = None
+    for facet, value in (("tags", tag), ("category", category), ("person", person)):
+        if value:
+            ids = set(_facet_asset_ids(session, facet, value))
+            facet_ids = ids if facet_ids is None else (facet_ids & ids)
+    if facet_ids is not None:
+        stmt = stmt.where(Asset.id.in_(facet_ids))
+
     if cursor is not None:
         stmt = stmt.where(Asset.id < cursor)
     stmt = stmt.order_by(
@@ -85,7 +152,9 @@ def get_asset(asset_id: int, session: Session = Depends(get_db)):
             basic = json.loads(pr.result_json)
         except json.JSONDecodeError:
             basic = None
-    return _to_asset_dto(a, basic=basic)
+    dto = _to_asset_dto(a, basic=basic)
+    dto["plugin_results"] = _plugin_results(session, a.id)
+    return dto
 
 
 def _asset_path(a: Asset) -> Path | None:

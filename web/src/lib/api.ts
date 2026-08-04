@@ -32,9 +32,27 @@ export interface AssetDTO {
   basic_info?: Record<string, unknown> | null;
 }
 
+export interface PluginResultDTO {
+  status: string;
+  version: string;
+  elapsed_ms: number | null;
+  finished_at: number | null;
+  data: Record<string, unknown>;
+}
+
+export interface AssetDetailDTO extends AssetDTO {
+  plugin_results: Record<string, PluginResultDTO>;
+}
+
 export interface AssetPage {
   items: AssetDTO[];
   next_cursor: number | null;
+}
+
+export interface Facets {
+  tags: Record<string, number>;
+  categories: Record<string, number>;
+  persons: Record<string, number>;
 }
 
 export interface JobStats {
@@ -87,14 +105,19 @@ export interface FolderResponse {
 
 export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
-  assets: (cursor?: number, mediaType?: string) =>
+  assets: (cursor?: number, mediaType?: string, facets?: Record<string, string>) =>
     request<AssetPage>(
       `/assets?${new URLSearchParams({
         limit: "100",
         ...(cursor ? { cursor: String(cursor) } : {}),
         ...(mediaType ? { media_type: mediaType } : {}),
+        ...(facets?.tag ? { tag: facets.tag } : {}),
+        ...(facets?.category ? { category: facets.category } : {}),
+        ...(facets?.person ? { person: facets.person } : {}),
       }).toString()}`,
     ),
+  asset: (id: number) => request<AssetDetailDTO>(`/assets/${id}`),
+  facets: () => request<Facets>("/facets"),
   jobs: () => request<JobsResponse>("/jobs"),
   retryJob: (id: number) =>
     request<{ ok: boolean }>(`/jobs/${id}/retry`, { method: "POST" }),

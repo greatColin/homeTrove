@@ -155,44 +155,62 @@ def enqueue_basic_info(session: Session) -> int:
 
     Idempotent: re-running on a steady-state library is a no-op.
     """
+    return enqueue_pending(session, plugin_ids=["basic.info"])
+
+
+def enqueue_pending(session: Session, plugin_ids: list[str] | None = None) -> int:
+    """Enqueue every registered plugin for assets missing a successful result.
+
+    Idempotent per (asset, plugin): a plugin whose result already exists with
+    status ``ok`` is skipped, and a live (pending/running) job is not
+    duplicated.
+    """
+    from hometrove.plugins.api import AssetLike
     from hometrove.plugins.registry import REGISTRY
 
-    plugin = REGISTRY.get("basic.info")
-    est = plugin.estimate.__func__  # default 0.02s
-    # Use the default cost; per-asset estimation lands in M1.
-    est_cost = 0.02
+    if plugin_ids is None:
+        plugins = REGISTRY.list()
+    else:
+        plugins = [REGISTRY.get(pid) for pid in plugin_ids]
 
-    pending_assets = session.execute(
-        select(Asset.id).where(
-            ~exists().where(
-                (Job.asset_id == Asset.id)
-                & (Job.plugin_id == "basic.info")
-                & (Job.state == "done")
-            )
-        )
-    ).scalars().all()
-
-    enqueued = 0
     now = int(time.time())
-    for asset_id in pending_assets:
-        live = session.execute(
-            select(Job.id).where(
-                Job.asset_id == asset_id,
-                Job.plugin_id == "basic.info",
-                Job.state.in_(["pending", "running"]),
+    enqueued = 0
+
+    for plugin in plugins:
+        try:
+            est_cost = float(plugin.estimate(AssetLike()).seconds)
+        except Exception:  # noqa: BLE001
+            est_cost = 0.02
+
+        asset_ids = session.execute(
+            select(Asset.id).where(
+                ~exists().where(
+                    (Job.asset_id == Asset.id)
+                    & (Job.plugin_id == plugin.id)
+                    & (Job.state == "done")
+                )
             )
-        ).first()
-        if live is not None:
-            continue
-        session.add(
-            Job(
-                asset_id=asset_id,
-                plugin_id="basic.info",
-                state="pending",
-                est_cost=est_cost,
-                enqueued_at=now,
+        ).scalars().all()
+
+        for asset_id in asset_ids:
+            live = session.execute(
+                select(Job.id).where(
+                    Job.asset_id == asset_id,
+                    Job.plugin_id == plugin.id,
+                    Job.state.in_(["pending", "running"]),
+                )
+            ).first()
+            if live is not None:
+                continue
+            session.add(
+                Job(
+                    asset_id=asset_id,
+                    plugin_id=plugin.id,
+                    state="pending",
+                    est_cost=est_cost,
+                    enqueued_at=now,
+                )
             )
-        )
-        enqueued += 1
+            enqueued += 1
     session.commit()
     return enqueued

@@ -11,10 +11,10 @@ from fastapi.staticfiles import StaticFiles
 
 from hometrove.config import get_settings
 from hometrove.db import engine, session_scope
-from hometrove.plugins.builtin import BasicInfoPlugin
+import hometrove.plugins.builtin  # noqa: F401  registers basic.info + mock plugins
 from hometrove.plugins.registry import REGISTRY
 from hometrove.uploads import UploadManager, build_router as build_uploads_router
-from hometrove.api.routes import assets, folders, jobs, health
+from hometrove.api.routes import assets, facets, folders, jobs, health
 from hometrove.models import PluginConfig
 
 
@@ -25,10 +25,6 @@ def _web_dist_dir() -> Path | None:
         if d.is_dir() and (d / "index.html").is_file():
             return d
     return None
-
-
-# Load built-in plugins explicitly. M1 replaces this with entry-points.
-REGISTRY.register(BasicInfoPlugin())
 
 
 @asynccontextmanager
@@ -71,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(build_uploads_router(app.state.upload_manager))
     app.include_router(assets.router)
+    app.include_router(facets.router)
     app.include_router(folders.router)
     app.include_router(jobs.router)
 

@@ -18,8 +18,11 @@ def tmp_data_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HOMETROVE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("HOMETROVE_MEDIA_ROOTS", "")
     reset_settings_cache()
+    from hometrove.db import reset_engine
+    reset_engine()
     yield tmp_path / "data"
     reset_settings_cache()
+    reset_engine()
 
 
 def make_png(path: Path, w: int = 32, h: int = 24) -> None:
@@ -222,3 +225,95 @@ def test_chunked_upload_roundtrip(tmp_data_dir, tmp_path: Path):
         c.put(f"/api/uploads/{sid2}/chunks/1", files={"file": ("c", b"def", "application/octet-stream")})
         r = c.post(f"/api/uploads/{sid2}/complete", json={"chunk_indices": [0, 1]})
         assert r.status_code == 409
+
+
+def _seed_library(tmp_data_dir, tmp_path: Path, n: int = 4) -> int:
+    """Insert ``n`` png assets and run all plugins via the runner. Returns asset count."""
+    from hometrove.db import engine, session_scope
+    from hometrove.scanner import discover, enqueue_pending, upsert_assets
+    from hometrove.orchestrator.runner import run_one
+    from hometrove.models import Job
+
+    engine()
+    media = tmp_path / "photos"
+    media.mkdir()
+    for i in range(n):
+        make_png(media / f"img{i}.png", 10 + i, 8)
+    with session_scope() as s:
+        upsert_assets(s, list(discover([media])))
+        assert enqueue_pending(s) == n * len(REGISTRY.list())
+    # Consume the queue exactly like the worker does.
+    for _ in range(n * len(REGISTRY.list())):
+        with session_scope() as s:
+            job = s.query(Job).filter(Job.state == "pending").order_by(Job.enqueued_at).first()
+            assert job is not None
+            job.state = "running"
+            s.commit()
+            run_one(job.id, s)
+    return n
+
+
+def test_mock_plugins_idempotent_and_deterministic(tmp_data_dir, tmp_path: Path):
+    from hometrove.plugins.api import AssetLike
+    from hometrove.plugins.mock import MockTagsPlugin
+
+    p = MockTagsPlugin()
+    a1 = AssetLike(id=7, path="/p/a.png", media_root="/p", media_type="image", content_hash_prefix="h1")
+    a2 = AssetLike(id=7, path="/p/a.png", media_root="/p", media_type="image", content_hash_prefix="h1")
+    r1 = p.run(a1, type("C", (), {"params": p.ParamsModel.model_validate({})})())
+    r2 = p.run(a2, type("C", (), {"params": p.ParamsModel.model_validate({})})())
+    assert r1 == r2  # deterministic for same asset
+
+
+def test_facets_and_facet_filter(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_library(tmp_data_dir, tmp_path, n=4)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/facets")
+        assert r.status_code == 200
+        body = r.json()
+        for key in ("tags", "categories", "persons"):
+            assert key in body
+        assert body["tags"]  # mock.tags produced some tags
+
+        # Pick one tag and filter assets by it — must return 200 and some items.
+        tag = next(iter(body["tags"]))
+        r = c.get("/api/assets", params={"tag": tag, "limit": 50})
+        assert r.status_code == 200
+        page = r.json()
+        assert page["items"]
+
+        # Every returned asset must actually carry that tag.
+        for item in page["items"]:
+            detail = c.get(f"/api/assets/{item['id']}").json()
+            pr = detail["plugin_results"]
+            assert "mock.tags" in pr
+            assert tag in pr["mock.tags"]["data"]["tags"]
+
+        # Unknown facet value -> empty result, valid request.
+        r = c.get("/api/assets", params={"tag": "__never_exists__", "limit": 50})
+        assert r.status_code == 200
+        assert r.json()["items"] == []
+
+
+def test_asset_detail_includes_all_plugin_results(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_library(tmp_data_dir, tmp_path, n=2)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/assets/1")
+        assert r.status_code == 200
+        body = r.json()
+        assert "plugin_results" in body
+        for pid in ("basic.info", "mock.tags", "mock.category", "mock.faces"):
+            assert pid in body["plugin_results"], f"missing {pid}"
+            assert body["plugin_results"][pid]["status"] == "ok"
+        # Dynamic fields live under each plugin's ``data``.
+        assert "tags" in body["plugin_results"]["mock.tags"]["data"]
+        assert "category" in body["plugin_results"]["mock.category"]["data"]
+        assert "faces" in body["plugin_results"]["mock.faces"]["data"]

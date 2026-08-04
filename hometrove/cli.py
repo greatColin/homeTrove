@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "scan":
         from hometrove.db import session_scope
-        from hometrove.scanner import discover, enqueue_basic_info, upsert_assets
+        from hometrove.scanner import discover, enqueue_pending, upsert_assets
         from hometrove.config import get_settings
 
         settings = get_settings()
@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         with session_scope() as s:
             discovered = list(discover(roots))
             new, skipped = upsert_assets(s, discovered)
-            enq = enqueue_basic_info(s)
+            enq = enqueue_pending(s)
         print(f"new={new} skipped={skipped} enqueued={enq}")
         return 0
     if args.cmd == "migrate":
