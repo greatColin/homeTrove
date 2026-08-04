@@ -95,18 +95,61 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 ## 3. 当前进度
 
+> 本节是进度快照；每项的**验收口径与依赖关系**以 **[`FEATURES.md`](FEATURES.md)** 为唯一权威。
+
 **阶段总览：**
 
 | 阶段 | 主题 | 状态 |
 |---|---|---|
-| **M0** | 基础框架：扫描 → 入库 → 浏览/上传闭环 | ✅ 完成（2026-08-04） |
+| **M0** | 基础框架：扫描 → 入库 → 浏览/上传闭环 | ✅ 完成（2026-08-04），13/14 项 |
 | **M1** | 插件扩展：真实内容识别 + 检索 + 分类页 + 插件管理 | ⏳ 进行中 |
+| **v1 必备** | M1 完成后的产品收尾 | ⬜ 未开始 |
+| **v1.1** | 多用户 / 共享 / ASR / 移动端等 | ⬜ 未开始 |
+| **v2** | 远期能力 | ⬜ 未开始 |
 
-**M0 现状一句话**：纯 Python 单进程即可运行（无需 Docker / Node），已完成扫描、`basic.info` + 3 个模拟插件、分片上传/断点续传、SSE 进度、时间轴/文件夹/标签/分类/人脸/文件详情/上传/任务中心全部页面，以及提前落地的**人脸分组系统**（embedding 检测 + `face.match` 归组 + 人员管理 API 与页面）。
+### M0 基础框架（✅ 已完成，2026-08-04）
 
-**功能清单、逐项进度、验收口径、待决策** —— 全部在 **[`FEATURES.md`](FEATURES.md)**，那是全项目唯一的进度追踪清单，完成一项勾一项。README 不再重复维护功能列表。
+- [x] M0-1 仓库骨架（`hometrove/` + `web/` + `pyproject.toml`）
+- [x] M0-2 SQLite(WAL) + SQLAlchemy 2.0 + Alembic（`assets/plugin_results/jobs/plugin_config`）
+- [ ] M0-3 媒体根只读校验 —— 推迟至 M1
+- [x] M0-4 扫描器：初始全量 + 轮询增量 + `content_hash` 去重
+- [x] M0-5 `basic.info` 插件（name/media_type/size/mtime/hash + 尽力读宽高/时长/拍摄时间）
+- [x] M0-6 Worker + DAG 拓扑调度（`depends_on`）
+- [x] M0-7 SSE 进度推送（worker → api → 前端）
+- [x] M0-8 REST API：`/api/assets` `/api/folders` `/api/health` `/api/jobs`
+- [x] M0-9 前端骨架（React 19 + Vite + Tailwind + TanStack Query）
+- [x] M0-10 `/timeline` 时间轴（M0 用占位色块，无实缩略图）
+- [x] M0-11 `/folders` 原始目录树
+- [x] M0-12 `/settings/jobs`（进度 + 队列 + 失败重试）
+- [x] M0-13 纯 Python 单进程 `hometrove serve`
+- [x] M0-14 文档 `docs/INSTALL.md` + `docs/DEV.md`
 
-下一项（按 M1 序号）：**M1-1 `thumbnail` 缩略图插件**。
+> **M0 额外交付**：分片上传/断点续传/幂等重传、`enqueue_pending` 幂等入队、任务中心按文件聚合、3 个模拟插件（`mock.tags/category/faces`）、facets 聚合与过滤、文件详情页 `/asset/:id`、**人脸分组系统**（embedding + `face.match` 归组 + 人员管理 API 与页面，即 M1-4 提前落地）。
+
+### M1 插件扩展（⏳ 进行中，按序号推进）
+
+- [ ] M1-1 `thumbnail` 缩略图插件 —— 下一项
+- [ ] M1-2 `exif` 插件（相机/镜头/ISO/GPS）
+- [ ] M1-3 `basic.scene_detect` 视频场景切分
+- [ ] M1-4 `face.insightface` 真实人脸（归组管线已提前就绪，仅需替换 mock 检测器）
+- [ ] M1-5 `vlm.qwen3vl` 中文描述（前置：`PluginContext.image()/frames()/result_of()` 共享缓存）
+- [ ] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec）
+- [ ] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒）
+- [ ] M1-8 `/albums` `/tags` `/places` 分类页（`/tags` `/categories` 模拟页已就绪、`/people` 已实现）
+- [ ] M1-9 `/settings/plugins` 插件管理（开关 + ParamsModel 表单 + 定向重跑）
+- [ ] M1-10 `asr.faster_whisper` 语音转写
+- [ ] M1-11 鉴权骨架（默认放行，为多用户预留）
+
+### v1 必备（M0/M1 已覆盖的项）
+
+- 已覆盖：时间轴基础版、文件夹视图、灯箱、标签页（自动标签待 M1-5）、人物核心（命名/合并/过滤）、索引扫描、索引进度可视化、失败重试、健康检查、单用户
+- 待补齐（M1 完成后）：justified 网格、虚拟滚动、批量操作、收藏、回收站、相册、共享相册、智能相册、地点地图、高级筛选、语义搜索、以图搜图、场景切分、关键帧、静音预览、跳秒播放、插件管理
+
+### v1.1 / v2
+
+未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
+
+**下一项：M1-1 `thumbnail` 缩略图插件。**
 
 ---
 
