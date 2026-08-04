@@ -18,6 +18,9 @@ def _register_builtins() -> None:
     _R.register(MockTagsPlugin())
     _R.register(MockCategoryPlugin())
     _R.register(MockFacesPlugin())
+    # Real matching pipeline that groups detected face vectors under people.
+    from hometrove.plugins.face_match import FaceMatchPlugin
+    _R.register(FaceMatchPlugin())
 
 
 _register_builtins()

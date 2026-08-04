@@ -85,6 +85,60 @@ class Job(Base):
     __table_args__ = (Index("idx_jobs_state", "state"),)
 
 
+class Person(Base):
+    """A person the face matcher has grouped faces under.
+
+    ``name`` is a display label — auto-created entries get an opaque
+    ``未命名-<rand>`` label until the user edits it. ``info_json`` is a free
+    JSON document for operator-managed attributes (height, age, notes, …) that
+    lives independently of the tag system.
+    """
+
+    __tablename__ = "persons"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    info_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+    faces: Mapped[list["FaceEmbedding"]] = relationship(
+        back_populates="person",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class FaceEmbedding(Base):
+    """One detected face: its vector and the person it was matched to.
+
+    ``embedding_json`` holds the raw detection vector (list[float]) — the
+    detector emits only vectors, never names; names come from ``persons``.
+    """
+
+    __tablename__ = "face_embeddings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("persons.id", ondelete="SET NULL"),
+    )
+    asset_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False,
+    )
+    embedding_json: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    box_json: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+    person: Mapped[Optional[Person]] = relationship(back_populates="faces")
+    asset: Mapped[Asset] = relationship()
+
+    __table_args__ = (
+        Index("idx_face_embeddings_person", "person_id"),
+        Index("idx_face_embeddings_asset", "asset_id"),
+    )
+
+
 class PluginConfig(Base):
     __tablename__ = "plugin_config"
 

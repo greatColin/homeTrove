@@ -48,6 +48,33 @@ def _pick(seed: int, pool: list[str], count: int) -> list[str]:
     return out
 
 
+_EMBEDDING_DIM = 64
+
+
+def _identity_embedding(identity: int, seed: int) -> list[float]:
+    """Deterministic normalized vector for a simulated person identity.
+
+    Same ``identity`` yields near-identical vectors across different assets;
+    ``seed`` (asset-specific) adds small noise so the matcher sees realistic
+    within-identity similarity rather than exact equality.
+    """
+    import math
+
+    # Anchor vector for the identity — derived only from ``identity``.
+    anchor = []
+    for d in range(_EMBEDDING_DIM):
+        h = hashlib.sha256(f"id{identity}:d{d}".encode()).digest()
+        anchor.append(int.from_bytes(h[:8], "big") / 2**64 * 2.0 - 1.0)
+    # Noise proportional to seed.
+    noise = []
+    for d in range(_EMBEDDING_DIM):
+        h = hashlib.sha256(f"n{seed}:d{d}".encode()).digest()
+        noise.append((int.from_bytes(h[:8], "big") / 2**64 - 0.5) * 0.2)
+    vec = [a + no for a, no in zip(anchor, noise)]
+    norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+    return [round(x / norm, 6) for x in vec]
+
+
 class MockTagsPlugin(BasePlugin):
     id: str = "mock.tags"
     name: str = "标签（模拟）"
@@ -92,7 +119,7 @@ class MockCategoryPlugin(BasePlugin):
 
 class MockFacesPlugin(BasePlugin):
     id: str = "mock.faces"
-    name: str = "人脸（模拟）"
+    name: str = "人脸检测（模拟）"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value}
     depends_on: list[str] = ["basic.info"]
@@ -104,16 +131,25 @@ class MockFacesPlugin(BasePlugin):
         return Cost(seconds=0.001, device="cpu")
 
     def run(self, asset: AssetLike, ctx: PluginContext) -> dict[str, Any]:
+        """Emit face embeddings only.
+
+        A real detector returns a vector per face. To make the matcher
+        demonstrable, we simulate a few stable "identities": each identity has
+        an anchor vector, and every face drawn from it is the anchor plus
+        small deterministic noise — so faces of the same identity are similar
+        and cross-photo grouping actually works.
+        """
         params: MockFacesPlugin.ParamsModel = ctx.params  # type: ignore[assignment]
         seed = _seed(asset)
         n = seed % (params.max_faces + 1)  # 0..max_faces
         faces: list[dict[str, Any]] = []
         for i in range(n):
-            person = _pick(seed + i * 13, _POOL["persons"], 1)[0]
+            identity = (seed >> (i * 5)) % 6  # 0..5, deterministic per face
+            vec = _identity_embedding(identity, seed + i * 17)
             faces.append(
                 {
-                    "person": person,
-                    "confidence": 0.6 + ((seed >> i) % 35) / 100.0,
+                    "embedding": vec,
+                    "confidence": round(0.6 + ((seed >> i) % 35) / 100.0, 3),
                     "box": [10 + (seed >> i) % 100, 10 + (seed >> (i + 3)) % 100],
                 }
             )

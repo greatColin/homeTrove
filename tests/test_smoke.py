@@ -242,13 +242,14 @@ def _seed_library(tmp_data_dir, tmp_path: Path, n: int = 4) -> int:
     with session_scope() as s:
         upsert_assets(s, list(discover([media])))
         assert enqueue_pending(s) == n * len(REGISTRY.list())
-    # Consume the queue exactly like the worker does.
-    for _ in range(n * len(REGISTRY.list())):
+    # Consume the queue exactly like the worker does (claims respect the
+    # plugin DAG, so ``face.match`` only runs after ``mock.faces``).
+    from hometrove.worker.main import _claim_next
+    while True:
         with session_scope() as s:
-            job = s.query(Job).filter(Job.state == "pending").order_by(Job.enqueued_at).first()
-            assert job is not None
-            job.state = "running"
-            s.commit()
+            job = _claim_next(s, "test")
+            if job is None:
+                break
             run_one(job.id, s)
     return n
 
@@ -310,10 +311,99 @@ def test_asset_detail_includes_all_plugin_results(tmp_data_dir, tmp_path: Path):
         assert r.status_code == 200
         body = r.json()
         assert "plugin_results" in body
-        for pid in ("basic.info", "mock.tags", "mock.category", "mock.faces"):
+        for pid in ("basic.info", "mock.tags", "mock.category", "mock.faces", "face.match"):
             assert pid in body["plugin_results"], f"missing {pid}"
             assert body["plugin_results"][pid]["status"] == "ok"
         # Dynamic fields live under each plugin's ``data``.
         assert "tags" in body["plugin_results"]["mock.tags"]["data"]
         assert "category" in body["plugin_results"]["mock.category"]["data"]
         assert "faces" in body["plugin_results"]["mock.faces"]["data"]
+
+
+def test_face_grouping_creates_unnamed_persons(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import FaceEmbedding, Person
+
+    _seed_library(tmp_data_dir, tmp_path, n=2)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/facets")
+        assert r.status_code == 200
+        persons_map = r.json()["persons"]
+        assert persons_map, "mock.faces + face.match should group faces under persons"
+
+        r = c.get("/api/persons")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == len(persons_map)
+        for p in items:
+            assert p["name"].startswith("未命名")
+            assert p["face_count"] > 0
+
+    with session_scope() as s:
+        assert s.query(FaceEmbedding).count() > 0
+        assert s.query(Person).count() == len(persons_map)
+
+
+def test_person_rename_backfills_and_merge(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import FaceEmbedding, Person
+    from hometrove.faces import merge_persons
+
+    _seed_library(tmp_data_dir, tmp_path, n=4)
+    app = create_app()
+    with session_scope() as s:
+        total_before = s.query(FaceEmbedding).count()
+    with TestClient(app) as c:
+        people = c.get("/api/persons").json()["items"]
+        assert len(people) >= 2
+        first, second = people[0], people[1]
+
+        r = c.patch(f"/api/persons/{first['id']}", json={"name": "张三"})
+        assert r.status_code == 200
+        assert r.json()["name"] == "张三"
+        # Backfill may have pulled unnamed faces under 张三; at least keeps own.
+        assert r.json()["face_count"] >= 1
+
+        r = c.patch(f"/api/persons/{second['id']}", json={"info": {"年龄": 30, "备注": "好友"}})
+        assert r.status_code == 200
+        assert r.json()["info"]["年龄"] == 30
+
+        # Merge second into first.
+        keep, remove = first["id"], second["id"]
+        r = c.post("/api/persons/merge", json={"keep_id": keep, "remove_id": remove})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        merged = c.get(f"/api/persons/{keep}").json()
+        assert merged["face_count"] >= 1
+        assert c.get(f"/api/persons/{remove}").status_code == 404
+
+    with session_scope() as s:
+        assert s.get(Person, remove) is None
+        # All faces that used to belong to ``remove`` now live under ``keep``.
+        for f in s.query(FaceEmbedding).all():
+            assert f.person_id != remove
+        # Merge must never drop face rows (delete-orphan regression guard).
+        assert s.query(FaceEmbedding).count() == total_before
+
+
+def test_person_facet_filter(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_library(tmp_data_dir, tmp_path, n=4)
+    app = create_app()
+    with TestClient(app) as c:
+        people = c.get("/api/persons", params={"include_assets": True}).json()["items"]
+        assert people
+        pid = people[0]["id"]
+        asset_ids = people[0]["asset_ids"]
+        assert asset_ids
+        r = c.get("/api/assets", params={"person_id": pid, "limit": 50})
+        assert r.status_code == 200
+        got = {item["id"] for item in r.json()["items"]}
+        assert set(asset_ids) <= got

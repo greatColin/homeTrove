@@ -15,7 +15,7 @@ if config.config_file_name:
 
 # Override sqlalchemy.url from app settings
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", settings.resolved_database_url())
 
 target_metadata = Base.metadata
 

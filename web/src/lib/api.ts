@@ -103,6 +103,16 @@ export interface FolderResponse {
   roots: FolderRoot[];
 }
 
+export interface PersonDTO {
+  id: number;
+  name: string;
+  info: Record<string, unknown>;
+  face_count: number;
+  asset_ids: number[];
+  created_at: number;
+  updated_at: number;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
   assets: (cursor?: number, mediaType?: string, facets?: Record<string, string>) =>
@@ -113,7 +123,7 @@ export const api = {
         ...(mediaType ? { media_type: mediaType } : {}),
         ...(facets?.tag ? { tag: facets.tag } : {}),
         ...(facets?.category ? { category: facets.category } : {}),
-        ...(facets?.person ? { person: facets.person } : {}),
+        ...(facets?.person_id ? { person_id: facets.person_id } : {}),
       }).toString()}`,
     ),
   asset: (id: number) => request<AssetDetailDTO>(`/assets/${id}`),
@@ -126,6 +136,15 @@ export const api = {
       method: "POST",
     }),
   folders: () => request<FolderResponse>("/folders"),
+  persons: () => request<{ items: PersonDTO[] }>("/persons?include_assets=true"),
+  person: (id: number) => request<PersonDTO>(`/persons/${id}`),
+  updatePerson: (id: number, body: Record<string, unknown>) =>
+    request<PersonDTO>(`/persons/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  mergePersons: (keepId: number, removeId: number) =>
+    request<{ ok: boolean; moved: number }>("/persons/merge", {
+      method: "POST",
+      body: JSON.stringify({ keep_id: keepId, remove_id: removeId }),
+    }),
 };
 
 export function mediaLabel(t: string): string {

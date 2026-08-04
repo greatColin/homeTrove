@@ -47,16 +47,20 @@ def facets(session: Session = Depends(get_db)):
     cat_rows = session.execute(
         select(PluginResult).where(PluginResult.plugin_id == "mock.category")
     ).scalars().all()
-    face_rows = session.execute(
-        select(PluginResult).where(PluginResult.plugin_id == "mock.faces")
-    ).scalars().all()
 
     tags = _counts_from_rows(tags_rows, lambda d: d.get("tags", []))
     categories = _counts_from_rows(
         cat_rows, lambda d: [d.get("category")] + ([d.get("subcategory")] if d.get("subcategory") else [])
     )
-    persons = _counts_from_rows(
-        face_rows, lambda d: [f.get("person") for f in d.get("faces", [])]
-    )
 
-    return {"tags": tags, "categories": categories, "persons": persons}
+    # Persons are matched people, not detected names: count each person by the
+    # number of faces grouped under them, keyed by person id.
+    from hometrove.models import Person
+    persons = session.execute(select(Person)).scalars().all()
+    persons_map = {
+        str(p.id): len(p.faces)
+        for p in persons
+        if p.faces
+    }
+
+    return {"tags": tags, "categories": categories, "persons": persons_map}

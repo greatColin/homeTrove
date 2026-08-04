@@ -34,7 +34,7 @@ export default function FacetPage({
   title,
   emptyHint,
 }: {
-  facet: "tags" | "categories" | "persons";
+  facet: "tags" | "categories";
   title: string;
   emptyHint: string;
 }) {
@@ -42,8 +42,7 @@ export default function FacetPage({
   const { data: facets } = useQuery({ queryKey: ["facets"], queryFn: api.facets });
   const counts = facets?.[facet] ?? {};
 
-  const filterKey =
-    facet === "tags" ? "tag" : facet === "categories" ? "category" : "person";
+  const filterKey = facet === "tags" ? "tag" : "category";
 
   const {
     data,

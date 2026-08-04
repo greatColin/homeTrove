@@ -11,7 +11,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from hometrove.db import get_db
-from hometrove.models import Asset, PluginResult
+from hometrove.models import Asset, FaceEmbedding, PluginResult
 
 
 router = APIRouter(prefix="/api", tags=["assets"])
@@ -22,7 +22,6 @@ router = APIRouter(prefix="/api", tags=["assets"])
 _FACET_PLUGIN = {
     "tags": "mock.tags",
     "category": "mock.category",
-    "person": "mock.faces",
 }
 
 
@@ -31,7 +30,8 @@ def _facet_asset_ids(session: Session, facet: str, value: str) -> list[int]:
 
     Uses a JSON substring match on ``result_json`` — precise enough for M0's
     small libraries and works on any SQL backend. The facet plugins write
-    values as JSON string keys.
+    values as JSON string keys. The ``person`` facet is handled separately via
+    ``face_embeddings`` (persons are matched, not detected).
     """
     plugin_id = _FACET_PLUGIN.get(facet)
     if plugin_id is None:
@@ -40,6 +40,15 @@ def _facet_asset_ids(session: Session, facet: str, value: str) -> list[int]:
         select(PluginResult.asset_id).where(
             PluginResult.plugin_id == plugin_id,
             PluginResult.result_json.contains(f'"{value}"'),
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+def _person_asset_ids(session: Session, person_id: int) -> list[int]:
+    rows = session.execute(
+        select(FaceEmbedding.asset_id).where(
+            FaceEmbedding.person_id == person_id
         )
     ).scalars().all()
     return list(rows)
@@ -93,7 +102,7 @@ def list_assets(
     limit: int = Query(60, ge=1, le=500),
     tag: Optional[str] = None,
     category: Optional[str] = None,
-    person: Optional[str] = None,
+    person_id: Optional[int] = None,
     session: Session = Depends(get_db),
 ):
     stmt = select(Asset)
@@ -101,12 +110,15 @@ def list_assets(
         stmt = stmt.where(Asset.media_type == media_type)
 
     # Facet filters narrow the result set to assets whose plugin output
-    # contains the selected value.
+    # contains the selected value. ``person_id`` filters via face_embeddings.
     facet_ids: set[int] | None = None
-    for facet, value in (("tags", tag), ("category", category), ("person", person)):
+    for facet, value in (("tags", tag), ("category", category)):
         if value:
             ids = set(_facet_asset_ids(session, facet, value))
             facet_ids = ids if facet_ids is None else (facet_ids & ids)
+    if person_id is not None:
+        ids = set(_person_asset_ids(session, person_id))
+        facet_ids = ids if facet_ids is None else (facet_ids & ids)
     if facet_ids is not None:
         stmt = stmt.where(Asset.id.in_(facet_ids))
 

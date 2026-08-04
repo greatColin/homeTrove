@@ -42,12 +42,16 @@ class PluginContext:
     """Per-call context.
 
     ``params`` is the resolved ``ParamsModel`` instance; ``report_progress``
-    is a no-op in M0 so plugins can call it unconditionally.
+    is a no-op in M0 so plugins can call it unconditionally. ``db`` is the
+    current SQLAlchemy ``Session`` when the orchestrator supplies one (needed
+    by plugins that match against the library, e.g. face.match); it is
+    ``None`` in contexts without a database (unit tests, dry runs).
     """
 
-    def __init__(self, asset: AssetLike, params: Any) -> None:
+    def __init__(self, asset: AssetLike, params: Any, db: Any = None) -> None:
         self.asset = asset
         self._params = params
+        self.db = db
 
     @property
     def params(self) -> Any:

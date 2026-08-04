@@ -52,7 +52,7 @@ def run_one(job_id: int, session: Session) -> None:
         mtime=asset.mtime,
         content_hash_prefix=asset.content_hash,
     )
-    ctx = PluginContext(asset=asset_like, params=params)
+    ctx = PluginContext(asset=asset_like, params=params, db=session)
 
     job.state = "running"
     job.started_at = _now()

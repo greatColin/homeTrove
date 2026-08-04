@@ -22,7 +22,7 @@ from hometrove.events import BUS, JobEvent
 from hometrove.orchestrator.dag import Node, build_graph
 from hometrove.orchestrator.runner import run_one
 from hometrove.db import session_scope
-from hometrove.models import Job
+from hometrove.models import Job, PluginResult
 from hometrove.plugins.registry import REGISTRY
 import hometrove.plugins.builtin  # noqa: F401  ensure built-in plugins are registered
 
@@ -39,17 +39,32 @@ def _build_dag():
 
 
 def _claim_next(session, my_claim_token: str) -> Job | None:
-    """Atomically pick the oldest ``pending`` job and mark it ``running``."""
-    j = session.execute(
+    """Atomically pick the oldest ``pending`` job whose DAG dependencies are
+    satisfied (the job's plugin has a ``done`` result for that asset), and mark
+    it ``running``."""
+    plugins = {p.id: p for p in REGISTRY.list()}
+    jobs = session.execute(
         select(Job).where(Job.state == "pending").order_by(Job.enqueued_at)
-    ).scalars().first()
-    if j is None:
-        return None
-    j.state = "running"
-    j.started_at = int(time.time())
-    j.error = None
-    session.commit()
-    return j
+    ).scalars().all()
+    for j in jobs:
+        plugin = plugins.get(j.plugin_id)
+        deps = plugin.depends_on if plugin is not None else []
+        ready = True
+        for dep in deps:
+            pr = session.get(
+                PluginResult, (j.asset_id, dep, plugins[dep].version)
+            )
+            if pr is None or pr.status != "ok":
+                ready = False
+                break
+        if not ready:
+            continue
+        j.state = "running"
+        j.started_at = int(time.time())
+        j.error = None
+        session.commit()
+        return j
+    return None
 
 
 async def _publish(event_type: str, payload: dict) -> None:
