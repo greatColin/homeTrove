@@ -1,0 +1,30 @@
+services:
+  hometrove:
+    build: .
+    image: hometrove:local
+    container_name: hometrove
+    ports:
+      - "8080:8080"
+    environment:
+      HOMETROVE_DATA_DIR: /data
+      HOMETROVE_MEDIA_ROOTS: /media
+      HOMETROVE_LOG_LEVEL: INFO
+    volumes:
+      # Media is mounted READ-ONLY — the app must not write back to originals.
+      - ./media:/media:ro
+      - ./var:/data
+    restart: unless-stopped
+
+  # Optional: dedicated worker container on a GPU machine.
+  # Uncomment to split indexing away from the API server.
+  # worker:
+  #   build: .
+  #   image: hometrove:local
+  #   command: ["hometrove", "worker"]
+  #   environment:
+  #     HOMETROVE_DATA_DIR: /data
+  #     HOMETROVE_MEDIA_ROOTS: /media
+  #   volumes:
+  #     - ./media:/media:ro
+  #     - ./var:/data
+  #   restart: unless-stopped

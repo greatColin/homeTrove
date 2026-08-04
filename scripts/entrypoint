@@ -1,0 +1,33 @@
+#!/bin/bash
+# HomeTrove local dev bootstrap: start API + worker in one command.
+# Usage:
+#   HOMETROVE_MEDIA_ROOTS=/path/to/photos ./scripts/entrypoint
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+export HOMETROVE_MEDIA_ROOTS="${HOMETROVE_MEDIA_ROOTS:?set HOMETROVE_MEDIA_ROOTS to your media directory}"
+export HOMETROVE_DATA_DIR="${HOMETROVE_DATA_DIR:-$ROOT/var}"
+
+echo "[hometrove] media roots : $HOMETROVE_MEDIA_ROOTS"
+echo "[hometrove] data dir    : $HOMETROVE_DATA_DIR"
+
+cleanup() {
+  echo
+  echo "[hometrove] shutting down..."
+  kill "$API_PID" "$WORKER_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+python3 -m uvicorn hometrove.api:create_app --host 0.0.0.0 --port 8080 --factory &
+API_PID=$!
+
+python3 -c "from hometrove.worker.main import run_forever; run_forever()" &
+WORKER_PID=$!
+
+echo "[hometrove] api     : http://localhost:8080  (pid $API_PID)"
+echo "[hometrove] worker  : pid $WORKER_PID"
+echo "[hometrove] press Ctrl-C to stop."
+
+wait "$WORKER_PID"

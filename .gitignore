@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Local runtime data
+var/
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# Frontend
+web/node_modules/
+
+# OS
+.DS_Store
