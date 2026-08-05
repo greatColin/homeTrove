@@ -15,6 +15,7 @@ import json
 from typing import Any
 
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from hometrove.plugins.api import AssetLike, Cost, MediaType, PluginContext
 from hometrove.plugins.base import BasePlugin
@@ -24,8 +25,8 @@ class FaceMatchPlugin(BasePlugin):
     id: str = "face.match"
     name: str = "人脸归组"
     version: str = "0.1.0"
-    supported_media: set[str] = {MediaType.IMAGE.value}
-    depends_on: list[str] = ["mock.faces"]
+    supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
+    depends_on: list[str] = ["face.detect"]
 
     class ParamsModel(BaseModel):
         threshold: float = 0.75
@@ -41,9 +42,15 @@ class FaceMatchPlugin(BasePlugin):
         from hometrove.models import PluginResult
 
         pr = None
-        for plugin_id in ("mock.faces", "faces.detect"):
-            pr = ctx.db.get(PluginResult, (asset.id, plugin_id, "0.1.0"))
-            if pr is not None and pr.status == "ok":
+        for plugin_id in ("face.detect", "mock.faces"):
+            row = ctx.db.execute(
+                select(PluginResult).where(
+                    PluginResult.asset_id == asset.id,
+                    PluginResult.plugin_id == plugin_id,
+                ).order_by(PluginResult.finished_at.desc())
+            ).scalars().first()
+            if row is not None and row.status == "ok":
+                pr = row
                 break
         if pr is None:
             return {"grouped": 0, "detected": 0}

@@ -63,6 +63,11 @@ def run_one(job_id: int, session: Session) -> None:
         result_dict = plugin.run(asset_like, ctx)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
+        # A plugin may report its own terminal status (e.g. ``skipped`` when
+        # its runtime dependency is unavailable). The runner honours it so
+        # downstream dependents see ``skipped`` instead of a fake ``ok``.
+        result_status = str(result_dict.get("status", "ok"))
+
         pr = session.get(
             PluginResult,
             (asset.id, plugin.id, plugin.version),
@@ -72,10 +77,10 @@ def run_one(job_id: int, session: Session) -> None:
                 asset_id=asset.id,
                 plugin_id=plugin.id,
                 plugin_version=plugin.version,
-                status="ok",
+                status=result_status,
             )
             session.add(pr)
-        pr.status = "ok"
+        pr.status = result_status
         pr.result_json = json.dumps(result_dict, ensure_ascii=False, sort_keys=True)
         pr.elapsed_ms = elapsed_ms
         pr.finished_at = _now()

@@ -131,7 +131,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 - [x] M1-1 `thumbnail` 缩略图插件（纯 Python：Pillow 多档位 + PyAV 视频抽帧真帧，网格真实缩略图）
 - [x] M1-2 `exif` 插件（纯 Python：Pillow EXIF + PyAV 视频元数据，相机/镜头/ISO/曝光/GPS；已替换 exiftool）
 - [x] M1-3 `basic.scene_detect` 视频场景切分（PySceneDetect + pyav 后端，输出场景秒范围 + keyframe）
-- [ ] M1-4 `face.insightface` 真实人脸（归组管线已提前就绪，仅需替换 mock 检测器）
+- [x] M1-4 `face.detect` 真实人脸（InsightFace SCRFD+ArcFace 512 维，CPU onnxruntime；图片全帧 + 视频 keyframe 抽帧去重）
 - [ ] M1-5 `vlm.qwen3vl` 中文描述（前置：`PluginContext.image()/frames()/result_of()` 共享缓存）
 - [ ] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec）
 - [ ] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒）
@@ -149,7 +149,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-4 `face.insightface` 真实人脸（归组管线已提前就绪，仅需替换 mock 检测器）。**（注：M1-5 `vlm.qwen3vl` 已另起任务并行开发。）
+**下一项：M1-5 `vlm.qwen3vl` 中文描述（另起任务并行开发）。**
 
 ---
 
@@ -564,7 +564,8 @@ plugin_results:
 | ID | 名称 | 启用时机 | 依赖 | 说明 | 状态 |
 |---|---|---|---|---|---|
 | `basic.scene_detect` | 场景切分 | 默认 | — | PySceneDetect ContentDetector + pyav 后端（回退 opencv）；输出场景秒范围 + keyframe。 | ✅ M1-3 |
-| `face.insightface` | 人脸识别 | 默认 | `basic.scene_detect`（视频） | SCRFD 检测 + ArcFace 512 维；视频走帧内跟踪去重。 | ⬜ M1-4 |
+| `face.detect` | 人脸检测 | 默认 | `basic.scene_detect`（视频，非硬依赖） | InsightFace buffalo_l（SCRFD + ArcFace 512 维）on CPU（onnxruntime）；图片全帧，视频抽 keyframe 帧内去重。 | ✅ M1-4 |
+| `face.match` | 人脸归组 | 默认 | `face.detect` | 消费检测 embedding，按 cosine 相似度归组到 person；命名反扫/合并见 `/api/persons`。 | ✅ M0 提前落地 |
 | `vlm.qwen3vl` | 视觉语言描述 | 默认 | `basic.scene_detect`（视频） | 输出结构化 JSON 描述。 | ⬜ M1-5 |
 | `embedding.jina_clip` | 图文向量 | 默认 | — | jina-clip-v2 输出 1024 维向量；视频对每个场景的关键帧独立编码。 | ⬜ M1-6 |
 | `embedding.bge_m3` | 文本向量 | 默认 | `vlm.qwen3vl` | 对 VLM 输出的描述做编码，写入 `embeddings.scope='caption'`。 | ⬜ M1-6 |
@@ -672,7 +673,7 @@ progress = Σ est_cost(已完成 job) / Σ est_cost(全部 job)
 | `exif` | 0.05 s | 0.2 s |
 | `thumbnail` | 0.1 s（按分辨率缩放） | 0.5 s + 0.05 × 场景数 |
 | `basic.scene_detect` | — | `0.04 × duration_seconds` |
-| `face.insightface` | `0.15 × face_count_est` | `0.6 × 场景数` |
+| `face.detect` | `0.15 × face_count_est`（图）/ 3 s 固定（视频） | `0.6 × 场景数` |
 | `vlm.qwen3vl` | 0.6 s（GPU）/ 6 s（CPU） | `1.8 × 场景数`（GPU） |
 | `embedding.jina_clip` | 0.05 s | `0.08 × 帧数` |
 | `embedding.bge_m3` | 0.02 s | `0.02 × 场景数` |

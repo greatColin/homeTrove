@@ -20,6 +20,10 @@ def tmp_data_dir(tmp_path: Path, monkeypatch):
     reset_settings_cache()
     from hometrove.db import reset_engine
     reset_engine()
+    # In unit tests we exercise the mock face pipeline (``mock.faces`` ->
+    # ``face.match``), so simulate "insightface unavailable" to force
+    # ``face.detect`` to skip and let ``face.match`` fall back to the mocks.
+    monkeypatch.setattr("hometrove.plugins.builtin.face_detect._get_app", lambda: None)
     yield tmp_path / "data"
     reset_settings_cache()
     reset_engine()
@@ -621,3 +625,129 @@ def test_scene_detect_skips_missing_file(tmp_data_dir, tmp_path: Path):
     )
     res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
     assert res["status"] == "skipped"
+
+
+def _make_photo(path: Path, w: int = 64, h: int = 48) -> None:
+    """A real Pillow image (make_png's output is only parseable by ffprobe)."""
+    from PIL import Image
+
+    Image.new("RGB", (w, h), (40, 80, 160)).save(path)
+
+
+def test_face_detect_skips_without_model(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """Without insightface the detector reports ``skipped`` (not a crash)."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.face_detect import FaceDetectPlugin
+
+    monkeypatch.setattr("hometrove.plugins.builtin.face_detect._get_app", lambda: None)
+    src = tmp_path / "p.png"
+    _make_photo(src, 32, 24)
+    p = FaceDetectPlugin()
+    asset = AssetLike(
+        id=50, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="fd",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "skipped"
+
+
+def test_face_detect_emits_expected_shape(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """A fake app yields the face.match-compatible output contract."""
+    import numpy as np
+
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.face_detect import FaceDetectPlugin
+
+    class FakeApp:
+        def get(self, img, max_num=0):  # noqa: ARG002
+            class F:
+                bbox = np.array([1.0, 2.0, 30.0, 40.0])
+                det_score = 0.92
+                embedding = np.linspace(0.0, 1.0, 512)
+
+            return [F()]
+
+    monkeypatch.setattr("hometrove.plugins.builtin.face_detect._get_app", lambda: FakeApp())
+    src = tmp_path / "p.png"
+    _make_photo(src, 64, 48)
+    p = FaceDetectPlugin()
+    asset = AssetLike(
+        id=51, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="fd2",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "ok"
+    assert res["detected"] == 1
+    face = res["faces"][0]
+    assert face["box"] == [1, 2, 30, 40]
+    assert face["confidence"] == 0.92
+    assert len(face["embedding"]) == 512
+
+
+def test_face_detect_skips_undecodable(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """A corrupt file must skip, not raise, even with a working app."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.face_detect import FaceDetectPlugin
+
+    monkeypatch.setattr(
+        "hometrove.plugins.builtin.face_detect._get_app",
+        lambda: type("App", (), {"get": lambda *a, **k: []})(),
+    )
+    src = tmp_path / "bad.jpg"
+    src.write_bytes(b"not an image")
+    p = FaceDetectPlugin()
+    asset = AssetLike(
+        id=52, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="fd3",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "skipped"
+
+
+def test_face_detect_video_samples_keyframes(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """Video detection samples scene keyframes and dedups the same identity."""
+    import numpy as np
+
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.face_detect import FaceDetectPlugin
+
+    class FakeApp:
+        def get(self, img, max_num=0):  # noqa: ARG002
+            class F:
+                bbox = np.array([5.0, 5.0, 20.0, 30.0])
+                det_score = 0.9
+                embedding = np.full(512, 0.1)
+
+            return [F()]
+
+    monkeypatch.setattr("hometrove.plugins.builtin.face_detect._get_app", lambda: FakeApp())
+    src = tmp_path / "clip.mp4"
+    _make_scene_video(src, [(40, 12), (200, 12)])
+
+    # Seed a basic.scene_detect result so keyframes exist.
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=60, path=str(src), media_root=str(src.parent),
+            content_hash="fdv", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        s.add(PluginResult(
+            asset_id=60, plugin_id="basic.scene_detect", plugin_version="0.1.0",
+            status="ok",
+            result_json='{"scenes": [{"start": 0.0, "end": 0.5, "keyframe": 0.25}, {"start": 0.5, "end": 1.0, "keyframe": 0.75}]}',
+        ))
+        s.commit()
+
+    p = FaceDetectPlugin()
+    asset = AssetLike(
+        id=60, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="fdv",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "ok"
+    # Same identity across sampled frames is deduped to a single face.
+    assert res["detected"] == 1
+    assert res["frames_sampled"] >= 1

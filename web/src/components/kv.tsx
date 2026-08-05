@@ -5,6 +5,8 @@ export const PLUGIN_LABELS: Record<string, string> = {
   "thumbnail": "缩略图",
   "exif": "EXIF 元数据",
   "basic.scene_detect": "场景切分",
+  "face.detect": "人脸检测",
+  "face.match": "人脸归组",
   "mock.tags": "标签（模拟）",
   "mock.category": "分类（模拟）",
   "mock.faces": "人脸（模拟）",

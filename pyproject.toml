@@ -18,6 +18,8 @@ dependencies = [
     "pillow>=10.4",
     "av>=13",
     "scenedetect>=0.6.4",
+    "insightface>=0.7.3",
+    "onnxruntime>=1.17",
 ]
 
 [project.optional-dependencies]

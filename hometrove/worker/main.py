@@ -54,7 +54,11 @@ def _claim_next(session, my_claim_token: str) -> Job | None:
             pr = session.get(
                 PluginResult, (j.asset_id, dep, plugins[dep].version)
             )
-            if pr is None or pr.status != "ok":
+            # A dependency that produced a terminal result (ok or skipped)
+            # counts as satisfied: ``skipped`` means the dependency is not
+            # applicable to this asset (e.g. scene_detect on an image), not
+            # that it failed. Only ``failed`` / missing results block.
+            if pr is None or pr.status not in ("ok", "skipped"):
                 ready = False
                 break
         if not ready:

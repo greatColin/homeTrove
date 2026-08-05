@@ -71,7 +71,7 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 | M1-1 | `thumbnail` 缩略图插件 | [x] 2026-08-05 | M0 完成 | **纯 Python 0.2.0**：Pillow 多档位（small 320 / medium 1280）写 `{data_dir}/thumbs/{asset_id}/`；视频用 PyAV（自带 FFmpeg 库）抽帧 → numpy → Pillow，解码失败才回退占位图；EXIF transpose 自动旋转；前端网格改用 `/api/assets/{id}/thumbnail?size=` 真实缩略图 |
 | M1-2 | `exif` 插件 | [x] 2026-08-05 | M0 | **纯 Python 0.2.0（已替换 exiftool）**：图片用 Pillow `getexif()` 读相机/镜头/ISO/曝光/焦距/GPS（GPS IFD 转十进制 `gps_lat/gps_lon`）；视频用 PyAV 读 duration/codec/分辨率/fps/rotation/encoder；详情信息栏动态渲染；无 EXIF 时 metadata 为空但 status=ok |
 | M1-3 | `basic.scene_detect` 视频场景切分 | [x] 2026-08-05 | M0 | **纯 Python 0.1.0**：PySceneDetect ContentDetector + `pyav` 后端（scenedetect 自带 opencv 回退）；输出场景起止秒 + `keyframe` 时间戳；结果经 `get_asset.plugin_results` 暴露，供 M1-4/M1-5 共享 |
-| M1-4 | `face.insightface` 真实人脸 | [ ] | M1-3（视频） | SCRFD + ArcFace 512 维；视频帧内跟踪去重。**说明**：归组管线已提前就绪——`mock.faces` 已输出 embedding + `face.match` 归组 + `/api/persons` 管理（命名反扫/合并/JSON 信息）都已完成，仅需把 mock 换成真实检测器并新增 `faces` 表 |
+| M1-4 | `face.detect` 真实人脸 | [x] 2026-08-05 | M1-3（视频） | **InsightFace buffalo_l（SCRFD 检测 + ArcFace 512 维）on CPU（onnxruntime）**；模型包首次自动下载（唯一非 pip 组件）；图片全帧检测，视频读 `basic.scene_detect` keyframe 抽帧 + 同人 cosine 去重；输出 `{faces:[{embedding,confidence,box}]}` 供 `face.match` 归组；无模型/无 insightface 时 skipped。**说明**：归组管线 M0 已就绪（`face.match` + `/api/persons` 命名反扫/合并），真实检测器就位后直接复用，`faces` 表即既有 `face_embeddings` |
 | M1-5 | `vlm.qwen3vl` 中文描述 | [ ] | M1-3（视频） | 接 VLM 端点；**前置**：`PluginContext.image()/frames()/result_of()` 共享缓存必须就位（当前接口位已预留、未实现） |
 | M1-6 | `embedding.jina_clip` + `embedding.bge_m3` | [ ] | M1-5 | sqlite-vec 接入；`embeddings` 表（scope=image/scene/caption） |
 | M1-7 | `/search` 语义搜索（双路召回 + RRF 融合） | [ ] | M1-5、M1-6 | 自然语言查询；视频命中从对应秒播放 |
