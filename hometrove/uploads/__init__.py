@@ -37,6 +37,7 @@ from fastapi import (
     APIRouter,
     Body,
     HTTPException,
+    Query,
     UploadFile,
     File,
 )
@@ -341,7 +342,9 @@ def build_router(manager: UploadManager) -> APIRouter:
         }
 
     @r.post("/{upload_id}/ingest", summary="Ingest a finalized upload into the library")
-    def ingest(upload_id: str):
+    def ingest(upload_id: str, plugin_ids: list[str] | None = None):
+        from pydantic import BaseModel
+
         from hometrove.config import get_settings
         from hometrove.scanner.ingest import ingest_file
 
@@ -353,7 +356,7 @@ def build_router(manager: UploadManager) -> APIRouter:
             raise HTTPException(409, "upload not finalized yet")
         from hometrove.db import session_scope
         with session_scope() as db:
-            asset_id = ingest_file(db, s.final_path)
+            asset_id = ingest_file(db, s.final_path, plugin_ids=plugin_ids)
         if asset_id < 0:
             raise HTTPException(410, "staged file vanished")
         return {"asset_id": asset_id, "upload_id": upload_id}

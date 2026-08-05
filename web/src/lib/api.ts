@@ -166,6 +166,14 @@ export interface PlacesResponse {
   grid: number;
 }
 
+export interface UploadPresetDTO {
+  id: number;
+  name: string;
+  is_builtin: boolean;
+  plugin_ids: string[];
+  created_at: number;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
   assets: (cursor?: number, mediaType?: string, facets?: Record<string, string>) =>
@@ -238,6 +246,14 @@ export const api = {
   deleteAlbum: (id: number) =>
     request<{ ok: boolean }>(`/albums/${id}`, { method: "DELETE" }),
   places: () => request<PlacesResponse>("/places"),
+  uploadPresets: () => request<{ items: UploadPresetDTO[] }>("/upload-presets"),
+  createUploadPreset: (name: string, pluginIds: string[]) =>
+    request<UploadPresetDTO>("/upload-presets", {
+      method: "POST",
+      body: JSON.stringify({ name, plugin_ids: pluginIds }),
+    }),
+  deleteUploadPreset: (id: number) =>
+    request<{ ok: boolean }>(`/upload-presets/${id}`, { method: "DELETE" }),
 };
 
 export function mediaLabel(t: string): string {

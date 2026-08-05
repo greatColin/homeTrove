@@ -225,3 +225,21 @@ class PluginConfig(Base):
     enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     params_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     calib: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+
+
+class PluginPreset(Base):
+    """A named set of plugins for upload presets.
+
+    ``plugin_ids`` holds the list of plugin ids that should run on upload
+    when this preset is selected. An empty list means "run all globally
+    enabled plugins" (same as no preset). Built-in presets have ``is_builtin=True``
+    and cannot be deleted.
+    """
+
+    __tablename__ = "plugin_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    is_builtin: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    plugin_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)

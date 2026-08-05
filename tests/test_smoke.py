@@ -1619,3 +1619,81 @@ def test_plugin_rerun_blocked_when_disabled(tmp_data_dir):
         assert r.status_code == 200
         r = c.post("/api/plugins/exif/rerun")
         assert r.status_code == 400
+
+
+def test_upload_preset_crud(tmp_data_dir):
+    """Built-in presets seeded; user can create/delete non-builtin presets."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        # First access seeds built-ins.
+        r = c.get("/api/upload-presets")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) >= 3  # 默认/会议/旅游
+        names = {i["name"] for i in items}
+        assert "默认" in names
+        assert "会议" in names
+        assert "旅游" in names
+
+        builtin_ids = {i["id"] for i in items if i["is_builtin"]}
+
+        # Create a custom preset.
+        r = c.post(
+            "/api/upload-presets",
+            json={"name": "  我的预设  ", "plugin_ids": ["thumbnail", "exif"]},
+        )
+        assert r.status_code == 201
+        custom = r.json()
+        assert custom["name"] == "我的预设"
+        assert custom["plugin_ids"] == ["thumbnail", "exif"]
+        assert custom["is_builtin"] is False
+        cid = custom["id"]
+
+        # Duplicate name -> 409.
+        r = c.post("/api/upload-presets", json={"name": "我的预设", "plugin_ids": []})
+        assert r.status_code == 409
+
+        # Delete custom preset.
+        r = c.delete(f"/api/upload-presets/{cid}")
+        assert r.status_code == 200
+
+        # Delete builtin -> 403.
+        bid = next(iter(builtin_ids))
+        r = c.delete(f"/api/upload-presets/{bid}")
+        assert r.status_code == 403
+
+
+def test_upload_ingest_with_plugin_ids(tmp_data_dir, tmp_path: Path):
+    """POST /api/uploads/{id}/ingest?plugin_ids= restricts which plugins are enqueued."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Job
+
+    app = create_app()
+    manager = app.state.upload_manager
+
+    # Create a minimal upload session and finalize it.
+    session_obj = manager.create("test.bin", size=4)
+    chunk_dir = session_obj.storage_dir / "chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    (chunk_dir / "0").write_bytes(b"\x00\x01\x02\x03")
+    session_obj.finalized = True
+    session_obj.final_path = session_obj.storage_dir / "test.bin"
+    session_obj.final_path.write_bytes(b"\x00\x01\x02\x03")
+
+    with TestClient(app) as c:
+        r = c.post(
+            f"/api/uploads/{session_obj.upload_id}/ingest?plugin_ids=thumbnail&plugin_ids=exif",
+        )
+        assert r.status_code == 200
+        asset_id = r.json()["asset_id"]
+
+        with session_scope() as s:
+            jobs = s.query(Job).filter(Job.asset_id == asset_id).all()
+            enqueued = {j.plugin_id for j in jobs}
+            assert "thumbnail" in enqueued
+            assert "exif" in enqueued

@@ -137,7 +137,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 - [x] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒；**当前 mock 向量阶段**）
 - [x] M1-8 `/albums` `/tags` `/places` 分类页（`/api/albums` CRUD + 资产添加/移除、`/api/places` exif GPS 网格聚类；前端 `/albums` `/places` 页；`/tags` `/categories` 模拟页、`/people` 已实现）
 - [x] M1-9 `/settings/plugins` 插件管理（**完整**：开关 + `params` 参数表单（按 `params_schema` 自动渲染、保存时 `ParamsModel` 校验）+ 版本展示 + 定向重跑 `POST /api/plugins/{id}/rerun`；禁用插件不入队/停驻、重启用恢复、禁用时 `shutdown()` 释放内存）
-- [ ] M1-10 `asr.faster_whisper` 语音转写
+- [ ] M1-10 `asr.faster_whisper` 语音转写（asr 本身待开发）；**上传插件预设**（`plugin_presets` 表含内置默认/会议/旅游+用户自定义 CRUD；`/api/upload-presets` GET/POST/DELETE；上传页选预设 → 插件 checkbox 列表回填 → 手动调整 → `POST /api/uploads/{id}/ingest?plugin_ids=` 入队；57 测试全绿）
 - [ ] M1-11 鉴权骨架（默认放行，为多用户预留）
 
 ### v1 必备（M0/M1 已覆盖的项）
@@ -149,7 +149,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-8 `/albums` `/places` 与 M1-9（完整：开关+参数表单+定向重跑）已推进（55 测试全绿）；剩余 M1-10 `asr.faster_whisper`、M1-11 鉴权骨架（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
+**下一项：M1-10（上传插件预设）已完成并推送（57 测试全绿）；asr 本体待开发；M1-11 鉴权骨架待推进（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
 
 ---
 

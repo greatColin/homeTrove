@@ -25,6 +25,7 @@ from hometrove.api.routes import (
     places,
     plugins,
     search,
+    upload_presets,
 )
 from hometrove.models import PluginConfig
 
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router)
     app.include_router(albums.router)
     app.include_router(places.router)
+    app.include_router(upload_presets.router)
 
     dist = _web_dist_dir()
     if dist is not None:

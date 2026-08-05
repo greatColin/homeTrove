@@ -17,8 +17,11 @@ from hometrove.config import get_settings
 from sqlalchemy.orm import Session
 
 
-def ingest_file(session: Session, src: Path) -> int:
-    """Create an asset for ``src`` (which lives in ``staging/``) and enqueue basic.info.
+def ingest_file(session: Session, src: Path, plugin_ids: list[str] | None = None) -> int:
+    """Create an asset for ``src`` (which lives in ``staging/``) and enqueue plugins.
+
+    If ``plugin_ids`` is given, only those plugins are enqueued; otherwise all
+    globally enabled plugins are enqueued (the default upload behaviour).
 
     Returns the new asset id, or ``-1`` if the file was lost mid-flight.
     """
@@ -58,5 +61,5 @@ def ingest_file(session: Session, src: Path) -> int:
         session.commit()
 
     from hometrove.scanner import enqueue_pending
-    enqueue_pending(session)
+    enqueue_pending(session, plugin_ids=plugin_ids)
     return asset.id
