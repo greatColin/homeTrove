@@ -3,18 +3,18 @@
 Generates downscaled JPEG copies of an asset into ``{data_dir}/thumbs/{asset_id}/``:
 
 * images are resized with Pillow (keeps EXIF orientation, no upscale);
-* videos get a representative frame via ``ffmpeg`` when available; otherwise a
-  deterministic placeholder PNG is written so the grid never shows a broken
-  image for video rows.
+* videos get a representative frame via PyAV (``av`` ships its own bundled
+  FFmpeg libraries, so no system ffmpeg is required); when the video cannot be
+  decoded a deterministic placeholder PNG is written so the grid never shows a
+  broken image for video rows.
 
 The plugin is *not* a failure when it cannot produce a real thumbnail (e.g.
-unsupported format, missing ffmpeg): it records a ``skipped`` result so the
+unsupported format, undecodable video): it records a ``skipped`` result so the
 frontend falls back to the original file / a labeled tile.
 """
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +35,7 @@ _DEFAULT_MAX_SIZE = _SIZES["small"]
 class ThumbnailPlugin(BasePlugin):
     id: str = "thumbnail"
     name: str = "缩略图"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = []
 
@@ -69,14 +69,18 @@ class ThumbnailPlugin(BasePlugin):
         want = [s for s in params.sizes if s in _SIZES]
         sizes = want or [_DEFAULT_MAX_SIZE]
         produced: dict[str, str] = {}
+        is_video = asset.media_type == MediaType.VIDEO.value
 
-        if asset.media_type == MediaType.VIDEO.value:
-            ok, src = self._video_frame(src, out_dir, params.video_frame_at_sec)
-            if not ok:
+        # For videos, first pull a representative frame as a JPEG with PyAV.
+        frame_path: Path | None = None
+        if is_video:
+            frame_path = self._video_frame(src, out_dir, params.video_frame_at_sec)
+            if frame_path is None:
                 placeholder = out_dir / "_frame.png"
                 _write_placeholder(placeholder)
-                src = placeholder
                 produced["placeholder"] = placeholder.name
+                frame_path = placeholder
+            src = frame_path
 
         try:
             from PIL import Image, ImageOps
@@ -111,28 +115,34 @@ class ThumbnailPlugin(BasePlugin):
             "src_name": meta["src_name"],
         }
 
-    def _video_frame(self, src: Path, out_dir: Path, at_sec: float) -> tuple[bool, Path]:
-        """Extract a single frame with ffmpeg; return (ok, frame_path).
+    def _video_frame(self, src: Path, out_dir: Path, at_sec: float) -> Path | None:
+        """Extract a single frame with PyAV (bundled FFmpeg); return path or None.
 
-        Falls back to the source path when ffmpeg is unavailable so the caller
-        can still attempt a decode (rare for video in Pillow) or write a
-        placeholder.
+        Returns ``None`` when the video cannot be decoded so the caller can
+        write a placeholder instead of failing the job.
         """
         dest = out_dir / "_frame.jpg"
         try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-ss", f"{at_sec:.3f}", "-i", str(src),
-                    "-frames:v", "1", "-q:v", "3", str(dest),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=60,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False, src
-        return dest.is_file(), dest
+            import av
+
+            with av.open(str(src)) as container:
+                try:
+                    container.seek(int(at_sec * 1000000))
+                except (ValueError, av.error.FFmpegError, av.AVError):
+                    container.seek(0)
+                frame = next(container.decode(video=0))
+        except Exception:  # noqa: BLE001  — any decode problem => placeholder
+            return None
+
+        try:
+            from PIL import Image
+            import numpy as np
+
+            arr = frame.to_ndarray(format="rgb24")
+            Image.fromarray(arr).save(dest, "JPEG", quality=85)
+        except Exception:  # noqa: BLE001
+            return None
+        return dest if dest.is_file() else None
 
 
 def _write_placeholder(path: Path) -> None:

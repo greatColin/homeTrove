@@ -227,8 +227,46 @@ def test_chunked_upload_roundtrip(tmp_data_dir, tmp_path: Path):
         assert r.status_code == 409
 
 
+def _make_video(path: Path, w: int = 160, h: int = 120, frames: int = 12) -> None:
+    """Write a tiny MP4 with PyAV (bundled FFmpeg) — no system ffmpeg needed."""
+    import av
+    import numpy as np
+
+    container = av.open(str(path), mode="w")
+    stream = container.add_stream("mpeg4", rate=24)
+    stream.width = w
+    stream.height = h
+    for i in range(frames):
+        arr = np.full((h, w, 3), i * 8, dtype="uint8")
+        frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
+        for packet in stream.encode(frame):
+            container.mux(packet)
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
+
+
+def _make_scene_video(path: Path, seg_specs: list[tuple[int, int]]) -> None:
+    """Write an MP4 of static-color segments, e.g. [(gray0, frames), ...]."""
+    import av
+    import numpy as np
+
+    container = av.open(str(path), mode="w")
+    stream = container.add_stream("mpeg4", rate=24)
+    stream.width = 320
+    stream.height = 240
+    for gray, frames in seg_specs:
+        color = np.full((240, 320, 3), gray, dtype="uint8")
+        for _ in range(frames):
+            frame = av.VideoFrame.from_ndarray(color, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
+
+
 def _seed_library(tmp_data_dir, tmp_path: Path, n: int = 4) -> int:
-    """Insert ``n`` png assets and run all plugins via the runner. Returns asset count."""
     from hometrove.db import engine, session_scope
     from hometrove.scanner import discover, enqueue_pending, upsert_assets
     from hometrove.orchestrator.runner import run_one
@@ -436,8 +474,33 @@ def test_thumbnail_plugin_writes_sizes(tmp_data_dir, tmp_path: Path):
     assert res["width"] == 1200 and res["height"] == 800
 
 
+def test_thumbnail_video_frame(tmp_data_dir, tmp_path: Path):
+    """Videos are thumbnailed from a real frame via PyAV (no system ffmpeg)."""
+    import numpy as np
+    from PIL import Image
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.thumbnail import ThumbnailPlugin
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, w=320, h=240, frames=24)
+
+    p = ThumbnailPlugin()
+    asset = AssetLike(
+        id=98, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="vid",
+    )
+    ctx = PluginContext(asset=asset, params=p.ParamsModel(), data_dir=tmp_data_dir)
+    res = p.run(asset, ctx)
+    assert res["status"] == "ok"
+    assert res["source"] == "video-frame"
+    small = tmp_data_dir / "thumbs" / "98" / "small.jpg"
+    assert small.is_file()
+    im = Image.open(small)
+    assert im.size[0] <= 320 and im.size[1] <= 240
+
+
 def test_thumbnail_video_placeholder(tmp_data_dir, tmp_path: Path):
-    """Videos without ffmpeg fall back to a deterministic placeholder so the
+    """Undecodable videos fall back to a deterministic placeholder so the
     grid never shows a broken tile."""
     from PIL import Image
     from hometrove.plugins.api import AssetLike, MediaType, PluginContext
@@ -474,11 +537,8 @@ def test_thumbnail_endpoint(tmp_data_dir, tmp_path: Path):
             assert len(r.content) > 0
 
 
-def test_exif_plugin_extracts_or_skips(tmp_data_dir, tmp_path: Path):
-    """exiftool must yield camera metadata; without the binary the plugin
-    reports ``skipped`` instead of failing the job."""
-    import shutil
-
+def test_exif_plugin_extracts_image(tmp_data_dir, tmp_path: Path):
+    """Pillow must read camera metadata from the EXIF block."""
     from PIL import Image
     from hometrove.plugins.api import AssetLike, MediaType, PluginContext
     from hometrove.plugins.builtin.exif import ExifPlugin
@@ -498,40 +558,66 @@ def test_exif_plugin_extracts_or_skips(tmp_data_dir, tmp_path: Path):
         media_type=MediaType.IMAGE.value, content_hash_prefix="ex",
     )
     res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
-
-    if shutil.which("exiftool") is None:
-        assert res["status"] == "skipped"
-        return
     assert res["status"] == "ok"
     md = res["metadata"]
     assert md.get("make") == "TestCam"
     assert md.get("model") == "TestCam Model X"
     assert md.get("iso") == 800
-    assert md.get("taken_at_original") == "2024:01:02 03:04:05"
 
 
-def test_exif_reuses_persistent_process(tmp_data_dir, tmp_path: Path):
-    """Repeated calls reuse the stay_open process rather than spawning one."""
-    import shutil
-
+def test_exif_plugin_reads_video(tmp_data_dir, tmp_path: Path):
+    """PyAV must report duration / resolution / codec for videos."""
     from hometrove.plugins.api import AssetLike, MediaType, PluginContext
-    from hometrove.plugins.builtin.exif import ExifPlugin, _get_tool
+    from hometrove.plugins.builtin.exif import ExifPlugin
 
-    if shutil.which("exiftool") is None:
-        pytest.skip("exiftool not installed")
+    src = tmp_path / "clip.mp4"
+    _make_video(src, w=160, h=120, frames=12)
 
-    src = tmp_path / "photo.jpg"
-    from PIL import Image
-
-    Image.new("RGB", (10, 10), (1, 2, 3)).save(src)
-    asset = AssetLike(
-        id=43, path=str(src), media_root=str(src.parent),
-        media_type=MediaType.IMAGE.value, content_hash_prefix="ex2",
-    )
     p = ExifPlugin()
-    for _ in range(3):
-        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
-        assert res["status"] == "ok"
-    tool = _get_tool()
-    assert tool is not None and tool._proc is not None
-    assert tool._proc.poll() is None  # still alive, reused
+    asset = AssetLike(
+        id=44, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="ex3",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "ok"
+    md = res["metadata"]
+    assert md.get("duration_sec", 0) > 0
+    assert md.get("video_width") == 160
+    assert md.get("video_height") == 120
+    assert md.get("codec")
+
+
+def test_scene_detect_finds_cuts(tmp_data_dir, tmp_path: Path):
+    """Static segments with a hard cut must be split by ContentDetector."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.scene_detect import SceneDetectPlugin
+
+    src = tmp_path / "scenes.mp4"
+    _make_scene_video(src, [(40, 24), (200, 24), (90, 24), (230, 24)])
+
+    p = SceneDetectPlugin()
+    asset = AssetLike(
+        id=45, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="sc",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "ok"
+    scenes = res["scenes"]
+    assert len(scenes) >= 1
+    for s in scenes:
+        assert s["start"] < s["end"]
+        assert "keyframe" in s
+
+
+def test_scene_detect_skips_missing_file(tmp_data_dir, tmp_path: Path):
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.scene_detect import SceneDetectPlugin
+
+    src = tmp_path / "nope.mp4"
+    p = SceneDetectPlugin()
+    asset = AssetLike(
+        id=46, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="sc2",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "skipped"

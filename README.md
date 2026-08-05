@@ -128,9 +128,9 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 ### M1 插件扩展（⏳ 进行中，按序号推进）
 
-- [x] M1-1 `thumbnail` 缩略图插件（Pillow 多档位 + 视频占位图，网格真实缩略图）
-- [x] M1-2 `exif` 插件（exiftool 常驻进程，相机/镜头/ISO/曝光/GPS）
-- [ ] M1-3 `basic.scene_detect` 视频场景切分
+- [x] M1-1 `thumbnail` 缩略图插件（纯 Python：Pillow 多档位 + PyAV 视频抽帧真帧，网格真实缩略图）
+- [x] M1-2 `exif` 插件（纯 Python：Pillow EXIF + PyAV 视频元数据，相机/镜头/ISO/曝光/GPS；已替换 exiftool）
+- [x] M1-3 `basic.scene_detect` 视频场景切分（PySceneDetect + pyav 后端，输出场景秒范围 + keyframe）
 - [ ] M1-4 `face.insightface` 真实人脸（归组管线已提前就绪，仅需替换 mock 检测器）
 - [ ] M1-5 `vlm.qwen3vl` 中文描述（前置：`PluginContext.image()/frames()/result_of()` 共享缓存）
 - [ ] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec）
@@ -149,7 +149,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-3 `basic.scene_detect` 视频场景切分。**（注：M1-5 `vlm.qwen3vl` 已另起任务并行开发。）
+**下一项：M1-4 `face.insightface` 真实人脸（归组管线已提前就绪，仅需替换 mock 检测器）。**（注：M1-5 `vlm.qwen3vl` 已另起任务并行开发。）
 
 ---
 
@@ -394,7 +394,7 @@ GET /assets/:id?t_start=...  →  Web 端 video player set currentTime = t_start
 | 视频分段 | PySceneDetect（ContentDetector） | 阈值在插件配置中可调 |
 | 语音转写 | faster-whisper | v1.1 引入，作为可选插件 |
 | 图像处理 | libvips（pyvips）+ pillow-heif | 高性能、低内存；HEIC 支持 |
-| 元数据 | exiftool（`-stay_open` 常驻进程） | 比 PIL 读 EXIF 字段更全 |
+| 元数据 | 纯 Python（Pillow `getexif` + PyAV 视频元数据） | 零外部软件；pip install 即可用 |
 | 视频处理 | ffmpeg / PyAV | 抽帧、缩略图、可选转码 |
 | 前端 | React 19 + TS + Vite + Tailwind + shadcn/ui + TanStack Query | 现代 React 主流栈 |
 | 网格布局 | react-photo-album / justified-layout | justified 网格 + 虚拟滚动 |
@@ -556,14 +556,14 @@ plugin_results:
 | ID | 名称 | 类型 | 说明 | 状态 |
 |---|---|---|---|---|
 | `basic.info` | 基本信息 | 内置 | 文件名、媒体类型、`mtime`、尺寸 — **默认始终启用**，是其他插件的依赖源。 | ✅ 已实现 |
-| `exif` | EXIF 元数据 | 内置 | 通过 exiftool 常驻模式读取完整 EXIF / XMP / IPTC。 | ⬜ M1-2 |
-| `thumbnail` | 缩略图 | 内置 | 生成多档位缩略图（128 / 320 / 640 / 1280）写入本地缓存目录（不进只读媒体根）。 | ⬜ M1-1 |
+| `exif` | EXIF 元数据 | 内置 | 纯 Python：Pillow 读 EXIF（相机/镜头/ISO/曝光/GPS）+ PyAV 读视频元数据。 | ✅ M1-2 |
+| `thumbnail` | 缩略图 | 内置 | Pillow 多档位（320/1280）+ PyAV 视频抽帧，写 `{data_dir}/thumbs/`（不进只读媒体根）。 | ✅ M1-1 |
 
 ### 8.5 可选插件
 
 | ID | 名称 | 启用时机 | 依赖 | 说明 | 状态 |
 |---|---|---|---|---|---|
-| `basic.scene_detect` | 场景切分 | 默认 | — | PySceneDetect ContentDetector；视频专用。 | ⬜ M1-3 |
+| `basic.scene_detect` | 场景切分 | 默认 | — | PySceneDetect ContentDetector + pyav 后端（回退 opencv）；输出场景秒范围 + keyframe。 | ✅ M1-3 |
 | `face.insightface` | 人脸识别 | 默认 | `basic.scene_detect`（视频） | SCRFD 检测 + ArcFace 512 维；视频走帧内跟踪去重。 | ⬜ M1-4 |
 | `vlm.qwen3vl` | 视觉语言描述 | 默认 | `basic.scene_detect`（视频） | 输出结构化 JSON 描述。 | ⬜ M1-5 |
 | `embedding.jina_clip` | 图文向量 | 默认 | — | jina-clip-v2 输出 1024 维向量；视频对每个场景的关键帧独立编码。 | ⬜ M1-6 |
