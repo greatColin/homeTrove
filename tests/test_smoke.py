@@ -1385,3 +1385,162 @@ def _encode_query_for_test(q: str) -> list[float]:
     from hometrove.search import _encode_query
 
     return _encode_query(q)
+
+
+def test_albums_crud_and_membership(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_library(tmp_data_dir, tmp_path, n=4)
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [x["id"] for x in c.get("/api/assets", params={"limit": 50}).json()["items"]]
+        assert len(ids) >= 4
+
+        # Create an album with a couple of assets.
+        r = c.post("/api/albums", json={"name": "  旅行  ", "asset_ids": ids[:2]})
+        assert r.status_code == 201
+        album = r.json()
+        assert album["name"] == "旅行"
+        assert album["asset_count"] == 2
+        assert set(album["asset_ids"]) == set(ids[:2])
+        aid = album["id"]
+
+        # List returns it with counts.
+        r = c.get("/api/albums")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert any(a["id"] == aid and a["asset_count"] == 2 for a in items)
+
+        # Detail with membership.
+        r = c.get(f"/api/albums/{aid}")
+        assert r.status_code == 200
+        assert set(r.json()["asset_ids"]) == set(ids[:2])
+
+        # Add more assets (idempotent on duplicates).
+        r = c.post(f"/api/albums/{aid}/assets", json={"asset_ids": ids + [ids[0]]})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["added"] == 2
+        assert len(body["album"]["asset_ids"]) == 4
+
+        # Rename + set cover.
+        r = c.patch(f"/api/albums/{aid}", json={"name": "蜜月", "cover_asset_id": ids[0]})
+        assert r.status_code == 200
+        assert r.json()["name"] == "蜜月"
+        assert r.json()["cover_asset_id"] == ids[0]
+
+        # Remove one asset; positions compact.
+        r = c.request("DELETE", f"/api/albums/{aid}/assets", json={"asset_ids": [ids[1]]})
+        assert r.status_code == 200
+        assert r.json()["removed"] == 1
+        assert r.json()["album"]["asset_ids"] == [ids[0], ids[2], ids[3]]
+
+        # Unknown asset in create/append -> 400.
+        r = c.post(f"/api/albums/{aid}/assets", json={"asset_ids": [99999]})
+        assert r.status_code == 400
+
+        # Blank name rejected.
+        r = c.post("/api/albums", json={"name": "   "})
+        assert r.status_code == 422
+
+        # Delete.
+        r = c.delete(f"/api/albums/{aid}")
+        assert r.status_code == 200
+        r = c.get(f"/api/albums/{aid}")
+        assert r.status_code == 404
+        # Membership rows cascade away.
+        from hometrove.db import session_scope
+        from hometrove.models import AlbumAsset
+        with session_scope() as s:
+            assert s.query(AlbumAsset).filter_by(album_id=aid).count() == 0
+
+
+def test_albums_validate_unknown_asset_on_create(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_library(tmp_data_dir, tmp_path, n=2)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/api/albums", json={"name": "x", "asset_ids": [123456]})
+        assert r.status_code == 400
+
+
+def test_places_clusters_exif_gps(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import engine, session_scope
+    from hometrove.models import Asset, PluginResult
+    from hometrove.scanner import discover, enqueue_pending, upsert_assets
+    from hometrove.orchestrator.runner import run_one
+    from hometrove.worker.main import _claim_next
+    import hometrove.plugins.builtin  # noqa: F401
+
+    engine()
+    media = tmp_path / "photos"
+    media.mkdir()
+    for i in range(3):
+        make_png(media / f"gps{i}.png", 10, 8)
+    with session_scope() as s:
+        upsert_assets(s, list(discover([media])))
+        enqueue_pending(s)
+    while True:
+        with session_scope() as s:
+            job = _claim_next(s, "test")
+            if job is None:
+                break
+            run_one(job.id, s)
+
+    # Stamp GPS into the exif plugin results: two photos near Beijing,
+    # one near Shanghai — distinct grid cells at the default 0.5° grid.
+    with session_scope() as s:
+        assets = s.query(Asset).order_by(Asset.id).all()
+        assert len(assets) == 3
+        gps = [
+            (39.9042, 116.4074),
+            (39.95, 116.45),
+            (31.2304, 121.4737),
+        ]
+        for a, (lat, lon) in zip(assets, gps):
+            s.add(PluginResult(
+                asset_id=a.id,
+                plugin_id="exif",
+                plugin_version="0.1.0",
+                status="ok",
+                result_json=json.dumps({"metadata": {"gps_lat": lat, "gps_lon": lon}}),
+            ))
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/places")
+        assert r.status_code == 200
+        body = r.json()
+        items = body["items"]
+        # Two clusters: Beijing (2 assets) and Shanghai (1).
+        assert len(items) == 2
+        assert items[0]["count"] == 2  # sorted by count desc
+        assert items[1]["count"] == 1
+        by_count = {it["count"]: it for it in items}
+        bj = by_count[2]
+        # Mean lat/lon near Beijing.
+        assert 39.0 < bj["lat"] < 40.5
+        assert 116.0 < bj["lon"] < 117.0
+        assert len(bj["asset_ids"]) == 2
+
+        # A finer grid separates the two Beijing photos.
+        r = c.get("/api/places", params={"grid": 0.05})
+        assert r.status_code == 200
+        assert len(r.json()["items"]) == 3
+
+
+def test_places_empty_without_gps(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_library(tmp_data_dir, tmp_path, n=2)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/places")
+        assert r.status_code == 200
+        assert r.json()["items"] == []

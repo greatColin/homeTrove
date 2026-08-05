@@ -135,7 +135,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 - [ ] M1-5 `vlm.qwen3vl` 中文描述（前置已就位：`PluginContext.image()/frames()/result_of()` 共享缓存 + `resolve_asset_path`）
 - [x] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec 接入，`embeddings` 表 image/scene scope；**当前 mock 向量阶段**，caption scope 待 M1-5）
 - [x] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒；**当前 mock 向量阶段**）
-- [ ] M1-8 `/albums` `/tags` `/places` 分类页（`/tags` `/categories` 模拟页已就绪、`/people` 已实现）
+- [x] M1-8 `/albums` `/tags` `/places` 分类页（`/api/albums` CRUD + 资产添加/移除、`/api/places` exif GPS 网格聚类；前端 `/albums` `/places` 页；`/tags` `/categories` 模拟页、`/people` 已实现）
 - [x] M1-9 `/settings/plugins` 插件管理（**开关已落地**：`/api/plugins` + `/plugins` 页；禁用插件不入队/停驻、重启用恢复、禁用时 `shutdown()` 释放内存；参数表单待补）
 - [ ] M1-10 `asr.faster_whisper` 语音转写
 - [ ] M1-11 鉴权骨架（默认放行，为多用户预留）
@@ -149,7 +149,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-7 已推进（`/search` 双路召回 + RRF + 视频跳秒，mock 向量阶段）；M1-8 `/albums` `/tags` `/places` 分类页待推进（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
+**下一项：M1-8 已推进（`/albums` 相册 CRUD + `/places` exif GPS 聚类地图，52 测试全绿）；剩余 M1-9 参数表单/定向重跑、M1-10 `asr.faster_whisper`、M1-11 鉴权骨架（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
 
 ---
 
@@ -189,11 +189,11 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 | 路由 | 用途 | 主要功能 | 当前状态 |
 |---|---|---|---|
 | `/timeline` | 时间轴（默认首页） | 按日/月/年缩放、右侧刻度、虚拟滚动、过滤栏 | ✅ 基础版 |
-| `/search` | **语义搜索** | 自然语言输入、结果栅格、视频片段+跳秒播放、最近搜索 | ⬜ M1-7 |
-| `/albums` | 相册 | 列表 + 详情；手动创建、相册内浏览 | ⬜ |
+| `/search` | **语义搜索** | 自然语言输入、结果栅格、视频片段+跳秒播放、最近搜索 | ✅ M1-7（mock 向量阶段） |
+| `/albums` | 相册 | 列表 + 详情；手动创建、相册内浏览 | ✅ M1-8 |
 | `/people` | 人物 | 聚类后的人脸 cover、命名、合并、隐藏、忽略 | ✅（前端 `/faces`） |
 | `/tags` | 标签 | 全部标签云、按标签筛选 | ✅（模拟数据） |
-| `/places` | 地点 | 地图视图 + GPS 聚类列表 | ⬜ |
+| `/places` | 地点 | 地图视图 + GPS 聚类列表 | ✅ M1-8 |
 | `/folders` | 原始目录树 | NAS 用户保留入口 | ✅ |
 | `/settings/plugins` | **插件管理** | 开关、参数表单（由 `params_model` 自动渲染）、版本、定向重跑 | ⬜ M1-9 |
 | `/settings/jobs` | **索引进度** | 总进度、队列、当前任务、失败重试 | ✅（实际路由 `/jobs`） |
