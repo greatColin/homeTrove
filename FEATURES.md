@@ -87,7 +87,7 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 | M1-6 | `embedding.jina_clip` + `embedding.bge_m3` | [x] 2026-08-05（基础设施 + image/scene scope） | M1-5（caption scope） | sqlite-vec 接入；`embeddings` 表（scope=image/scene）；**当前为无模型 mock 向量阶段**（确定性哈希+颜色特征，1024 维单位向量），`_encode_image/_encode_frame` 后续原地替换为真实 jina-clip-v2 即得真实语义；**caption scope 待 M1-5 完成后追加**（视频 scene 向量已就位，caption 只需在 VLM 出文后写同 scope） |
 | M1-7 | `/search` 语义搜索（双路召回 + RRF 融合） | [x] 2026-08-05（mock 向量阶段） | M1-6 | **已实现**：`/api/search?q=`（`hometrove/search.py`）；双路召回 = 向量（查询文本编码 1024 维查 `embedding_vec`，复用 `embedding.jina_clip` mock 编码器，真实 jina-clip-v2 文本编码器替换 `_encode_query` 即可）+ 关键词（SQL LIKE 匹配 `mock.tags`/`mock.category`/`exif`/`basic.info` 文本）；RRF（k=60）融合排序；`scope:scene/image` 前缀限定召回范围；视频 scene 命中带 `t_start/t_end` + `can_seek`，前端 `/search` 页从命中秒播放。**说明**：caption 文本召回待 M1-5 完成后并入关键词路径 |
 | M1-8 | `/albums` `/tags` `/places` 分类页 | [x] 2026-08-05 | M0 | **已实现**：`/api/albums` CRUD + 资产添加/移除（`albums`/`album_assets` 表，position 排序、封面、删除级联）；前端 `/albums` 页（列表卡片 + 详情 + 新建 + 选择添加 + 设封面/移除/重命名/删除）；`/api/places` 按 exif GPS 网格聚类（grid 可调，均值坐标 + 资产列表）；前端 `/places` 页（等距圆柱投影散点地图 + 聚类列表 + 该地资产网格）；`/tags` `/categories` 沿用模拟页（真实标签数据就位后替换）；`/people` 已提前实现 |
-| M1-9 | `/settings/plugins` 插件管理 | [x] 2026-08-05（开关部分） | M0 | **开关已落地**：`/api/plugins`（GET 列表 / PUT 开关）；`enqueue_pending` 与 worker `_claim_next` 尊重 `plugin_config.enabled`（禁用插件不入队、队列中未运行的该插件 job 停驻、重启用恢复）；禁用时调用插件 `shutdown()` 释放内存（face.detect 释放 FaceAnalysis，磁盘 artifacts 不动）；前端 `/plugins` 页面开关列表。**待补**：`ParamsModel` 参数表单 + 版本展示 + 定向重跑 |
+| M1-9 | `/settings/plugins` 插件管理 | [x] 2026-08-05（完整） | M0 | **已完整落地**：`/api/plugins`（GET 列表含 `params` 当前值与 `params_schema` / PUT 开关 + 参数）；`enqueue_pending` 与 worker `_claim_next` 尊重 `plugin_config.enabled`（禁用插件不入队、队列中未运行的该插件 job 停驻、重启用恢复）；禁用时调用插件 `shutdown()` 释放内存（face.detect 释放 FaceAnalysis，磁盘 artifacts 不动）；**参数表单**：前端按 `params_schema` 自动渲染 boolean/number/string/enum 控件，保存时经 `ParamsModel.model_validate` 校验（非法 422）；**定向重跑**：`POST /api/plugins/{id}/rerun` 丢弃该插件 done/failed 任务并整库重新入队（禁用时拒绝 400），用于调整参数后重新应用；版本展示已有 |
 | M1-10 | `asr.faster_whisper` 语音转写 | [ ] | M1-3 | 抽取音频 → 带时间戳字幕；scope=`audio`（v1.1 亦可） |
 | M1-11 | 鉴权骨架接入 | [ ] | — | `AuthBackend` 进中间件，默认放行；为多用户预留 |
 
@@ -217,4 +217,4 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 
 ## 当前进行中
 
-- 最后一勾：**M1 插件扩展**。本线已完成 M1-1~M1-7、M1-5 前置基础设施（`PluginContext` 共享缓存 + `resolve_asset_path`）与 **M1-9 开关部分**（`/api/plugins` + `/plugins` 页面；禁用插件不入队/停驻、重启用恢复、禁用时 `shutdown()` 释放内存）。**M1-7 已实现双路召回 + RRF 融合 + 视频跳秒**（mock 向量阶段）。**M1-8 已实现 `/albums` `/places` 分类页**（52 测试全绿）。剩余项：M1-9 参数表单/版本展示/定向重跑、M1-10 `asr.faster_whisper`、M1-11 鉴权骨架。注：M1-5 `vlm.qwen3vl` 已另起任务并行开发，不在此进度单内推进。
+- 最后一勾：**M1 插件扩展**。本线已完成 M1-1~M1-8、M1-5 前置基础设施（`PluginContext` 共享缓存 + `resolve_asset_path`）与 **M1-9（完整）**（插件开关 + 参数表单 + 定向重跑，55 测试全绿）。**M1-7 已实现双路召回 + RRF 融合 + 视频跳秒**（mock 向量阶段）。剩余项：M1-10 `asr.faster_whisper`、M1-11 鉴权骨架。注：M1-5 `vlm.qwen3vl` 已另起任务并行开发，不在此进度单内推进。

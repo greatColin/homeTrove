@@ -136,7 +136,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 - [x] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec 接入，`embeddings` 表 image/scene scope；**当前 mock 向量阶段**，caption scope 待 M1-5）
 - [x] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒；**当前 mock 向量阶段**）
 - [x] M1-8 `/albums` `/tags` `/places` 分类页（`/api/albums` CRUD + 资产添加/移除、`/api/places` exif GPS 网格聚类；前端 `/albums` `/places` 页；`/tags` `/categories` 模拟页、`/people` 已实现）
-- [x] M1-9 `/settings/plugins` 插件管理（**开关已落地**：`/api/plugins` + `/plugins` 页；禁用插件不入队/停驻、重启用恢复、禁用时 `shutdown()` 释放内存；参数表单待补）
+- [x] M1-9 `/settings/plugins` 插件管理（**完整**：开关 + `params` 参数表单（按 `params_schema` 自动渲染、保存时 `ParamsModel` 校验）+ 版本展示 + 定向重跑 `POST /api/plugins/{id}/rerun`；禁用插件不入队/停驻、重启用恢复、禁用时 `shutdown()` 释放内存）
 - [ ] M1-10 `asr.faster_whisper` 语音转写
 - [ ] M1-11 鉴权骨架（默认放行，为多用户预留）
 
@@ -149,7 +149,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-8 已推进（`/albums` 相册 CRUD + `/places` exif GPS 聚类地图，52 测试全绿）；剩余 M1-9 参数表单/定向重跑、M1-10 `asr.faster_whisper`、M1-11 鉴权骨架（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
+**下一项：M1-8 `/albums` `/places` 与 M1-9（完整：开关+参数表单+定向重跑）已推进（55 测试全绿）；剩余 M1-10 `asr.faster_whisper`、M1-11 鉴权骨架（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
 
 ---
 
@@ -195,7 +195,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 | `/tags` | 标签 | 全部标签云、按标签筛选 | ✅（模拟数据） |
 | `/places` | 地点 | 地图视图 + GPS 聚类列表 | ✅ M1-8 |
 | `/folders` | 原始目录树 | NAS 用户保留入口 | ✅ |
-| `/settings/plugins` | **插件管理** | 开关、参数表单（由 `params_model` 自动渲染）、版本、定向重跑 | ⬜ M1-9 |
+| `/settings/plugins` | **插件管理** | 开关、参数表单（由 `params_model` 自动渲染）、版本、定向重跑 | ✅ M1-9 |
 | `/settings/jobs` | **索引进度** | 总进度、队列、当前任务、失败重试 | ✅（实际路由 `/jobs`） |
 | `/settings/library` | 媒体库 | 目录挂载、扫描触发、只读校验、回收站 | ⬜ |
 | `/settings/account` | 账号（v1 占位） | 单用户设置、密码修改（v1.1 启用） | ⬜ |
@@ -594,7 +594,7 @@ CREATE TABLE plugin_config (
 2. **插件版本升级**：检测到 `plugin_results` 中存在旧版本，自动 enqueue 重跑；新版本完成后**旧版本保留**直到用户清理（可一键删除）。
 3. **单资产失败重试**：从 `jobs.error` 读取错误信息，用户点击重试只重跑对应插件，并保留 `attempts` 计数。
 
-> 现状：`plugin_config` 表与「重跑/版本」逻辑的后端已具备；前端 `/settings/plugins` 页面为 M1-9。
+> 现状：`plugin_config` 表、重跑/版本后端与前端 `/settings/plugins`（开关 + 参数表单 + 定向重跑）已全部落地（M1-9）。
 
 ### 8.7 打包形式
 

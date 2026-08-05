@@ -1544,3 +1544,78 @@ def test_places_empty_without_gps(tmp_data_dir, tmp_path: Path):
         r = c.get("/api/places")
         assert r.status_code == 200
         assert r.json()["items"] == []
+
+
+def test_plugin_params_save_and_validate(tmp_data_dir):
+    """PUT with params persists to plugin_config and validates against ParamsModel."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import PluginConfig
+
+    app = create_app()
+    with TestClient(app) as c:
+        # exif exposes read_geolocation / read_video_metadata booleans.
+        r = c.put(
+            "/api/plugins/exif",
+            json={"enabled": True, "params": {"read_geolocation": False}},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["params"] == {"read_geolocation": False}
+        assert "params_schema" in body
+        assert "read_geolocation" in body["params_schema"]["properties"]
+
+        # Invalid param type -> 422.
+        r = c.put(
+            "/api/plugins/exif",
+            json={"enabled": True, "params": {"read_geolocation": "nope"}},
+        )
+        assert r.status_code == 422
+
+    with session_scope() as s:
+        row = s.get(PluginConfig, "exif")
+        import json as _json
+        assert row is not None
+        assert _json.loads(row.params_json) == {"read_geolocation": False}
+
+
+def test_plugin_rerun_requeues_all(tmp_data_dir, tmp_path: Path):
+    """POST /api/plugins/{id}/rerun drops done/failed jobs and re-enqueues."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Job
+
+    n = _seed_library(tmp_data_dir, tmp_path, n=3)
+    # After seeding, every plugin has a done job per asset.
+    with session_scope() as s:
+        before = s.query(Job).filter(Job.plugin_id == "basic.info", Job.state == "done").count()
+        assert before == n
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/api/plugins/basic.info/rerun")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["dropped"] == n
+        assert body["enqueued"] == n
+
+    with session_scope() as s:
+        pending = s.query(Job).filter(Job.plugin_id == "basic.info", Job.state == "pending").count()
+        assert pending == n
+        done = s.query(Job).filter(Job.plugin_id == "basic.info", Job.state == "done").count()
+        assert done == 0
+
+
+def test_plugin_rerun_blocked_when_disabled(tmp_data_dir):
+    """Rerunning a disabled plugin returns 400."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.put("/api/plugins/exif", json={"enabled": False})
+        assert r.status_code == 200
+        r = c.post("/api/plugins/exif/rerun")
+        assert r.status_code == 400
