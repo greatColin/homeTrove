@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from hometrove.config import get_settings
 from hometrove.db import get_db
 from hometrove.models import Asset, FaceEmbedding, PluginResult
 
@@ -210,3 +211,40 @@ def asset_file(asset_id: int, session: Session = Depends(get_db)):
         media_type=media_type,
         headers={"X-Content-Type-Options": "nosniff"},
     )
+
+
+@router.get("/assets/{asset_id}/thumbnail", summary="Serve a generated thumbnail")
+def asset_thumbnail(
+    asset_id: int,
+    size: str = Query("small", pattern="^(small|medium|placeholder)$"),
+    session: Session = Depends(get_db),
+):
+    """Return a generated thumbnail for an asset from ``{data_dir}/thumbs/``.
+
+    ``size`` selects the bucket written by the ``thumbnail`` plugin. Falls back
+    to the original file only when no thumbnail exists yet and the asset is an
+    image — this keeps the grid usable while jobs are still queued.
+    """
+    a = session.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(404, "asset not found")
+
+    thumbs_dir = get_settings().resolved_data_dir() / "thumbs" / str(a.id)
+    candidates = [thumbs_dir / f"{size}.jpg"]
+    if size == "placeholder":
+        candidates.insert(0, thumbs_dir / "_frame.png")
+    for p in candidates:
+        if p.is_file():
+            return FileResponse(p, media_type="image/jpeg")
+    if size == "placeholder":
+        if (thumbs_dir / "_frame.png").is_file():
+            return FileResponse(thumbs_dir / "_frame.png", media_type="image/png")
+
+    # No thumbnail yet: for images serve the original; for anything else 404
+    # and let the frontend show its labeled tile.
+    if a.media_type == "image":
+        p = _asset_path(a)
+        if p is not None:
+            media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+            return FileResponse(p, media_type=media_type)
+    raise HTTPException(404, "thumbnail not found")

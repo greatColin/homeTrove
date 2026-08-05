@@ -1,33 +1,35 @@
 import { useEffect, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, mediaLabel, type AssetDTO } from "../lib/api";
+import { api, mediaLabel, thumbUrl, type AssetDTO } from "../lib/api";
 
 function Thumb({ asset, onClick }: { asset: AssetDTO; onClick: (a: AssetDTO) => void }) {
-  const isVideo = asset.media_type === "video";
   const isImage = asset.media_type === "image";
   return (
     <button
       onClick={() => onClick(asset)}
       className="group relative m-[2px] aspect-[4/3] overflow-hidden rounded-sm bg-neutral-200 dark:bg-neutral-800"
     >
-      {isImage ? (
-        <img
-          src={`/api/assets/${asset.id}/file`}
-          alt=""
-          loading="lazy"
-          className="h-full w-full object-cover transition group-hover:scale-105"
-          onError={(e) => {
-            (e.currentTarget as HTMLImageElement).style.display = "none";
-          }}
-        />
-      ) : null}
+      <img
+        src={thumbUrl(asset.id, isImage ? "small" : "placeholder")}
+        alt=""
+        loading="lazy"
+        className="h-full w-full object-cover transition group-hover:scale-105"
+        onError={(e) => {
+          const el = e.currentTarget;
+          if (!isImage && el.src.includes("placeholder")) {
+            el.style.display = "none";
+            return;
+          }
+          el.style.display = "none";
+        }}
+      />
       {!isImage && (
-        <div className="flex h-full w-full items-center justify-center text-neutral-400">
-          <span className="text-xs font-medium">{mediaLabel(asset.media_type)}</span>
-        </div>
+        <span className="absolute inset-0 flex items-center justify-center text-xs font-medium text-white/90">
+          <span className="rounded bg-black/50 px-2 py-0.5">{mediaLabel(asset.media_type)}</span>
+        </span>
       )}
-      {isVideo && asset.duration_sec ? (
+      {asset.media_type === "video" && asset.duration_sec ? (
         <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] text-white">
           {Math.round(asset.duration_sec)}s
         </span>

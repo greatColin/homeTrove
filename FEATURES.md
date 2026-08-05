@@ -68,7 +68,7 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 
 | # | 功能 | 状态 | 依赖 | 说明 / 验收 |
 |---|---|---|---|---|
-| M1-1 | `thumbnail` 缩略图插件 | [ ] | M0 完成 | libvips / pillow-heif；多档位写 `/data/thumbs/`；前端网格真实缩略图 |
+| M1-1 | `thumbnail` 缩略图插件 | [x] 2026-08-05 | M0 完成 | Pillow 多档位（small 320 / medium 1280）写 `{data_dir}/thumbs/{asset_id}/`；视频 ffmpeg 抽帧，无 ffmpeg 则占位图；前端网格改用 `/api/assets/{id}/thumbnail?size=` 真实缩略图 |
 | M1-2 | `exif` 插件 | [ ] | M0 | exiftool `-stay_open` 常驻；详情信息栏扩展（相机/镜头/ISO/GPS） |
 | M1-3 | `basic.scene_detect` 视频场景切分 | [ ] | M0 | PySceneDetect ContentDetector；结果供 M1-4/M1-5 共享 |
 | M1-4 | `face.insightface` 真实人脸 | [ ] | M1-3（视频） | SCRFD + ArcFace 512 维；视频帧内跟踪去重。**说明**：归组管线已提前就绪——`mock.faces` 已输出 embedding + `face.match` 归组 + `/api/persons` 管理（命名反扫/合并/JSON 信息）都已完成，仅需把 mock 换成真实检测器并新增 `faces` 表 |
@@ -206,4 +206,4 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 
 ## 当前进行中
 
-- 最后一勾：**M1 插件扩展**。下一项按序号应为 **M1-1 `thumbnail` 缩略图插件**（或用户指定顺序）。
+- 最后一勾：**M1 插件扩展**。下一项按序号应为 **M1-2 `exif` 插件**（或用户指定顺序）。注：M1-5 `vlm.qwen3vl` 已另起任务并行开发，不在此进度单内推进。

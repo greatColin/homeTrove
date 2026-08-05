@@ -157,3 +157,7 @@ export function mediaLabel(t: string): string {
       return "其他";
   }
 }
+
+export function thumbUrl(assetId: number, size: "small" | "medium" | "placeholder" = "small"): string {
+  return `/api/assets/${assetId}/thumbnail?size=${size}`;
+}

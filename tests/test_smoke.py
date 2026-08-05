@@ -407,3 +407,68 @@ def test_person_facet_filter(tmp_data_dir, tmp_path: Path):
         assert r.status_code == 200
         got = {item["id"] for item in r.json()["items"]}
         assert set(asset_ids) <= got
+
+
+def test_thumbnail_plugin_writes_sizes(tmp_data_dir, tmp_path: Path):
+    """The thumbnail plugin must downscale an image into the configured
+    size buckets under ``{data_dir}/thumbs/{asset_id}/``."""
+    from PIL import Image
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.thumbnail import ThumbnailPlugin
+
+    src = tmp_path / "big.png"
+    Image.new("RGB", (1200, 800), (10, 200, 40)).save(src)
+
+    p = ThumbnailPlugin()
+    asset = AssetLike(
+        id=99, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="th",
+    )
+    ctx = PluginContext(asset=asset, params=p.ParamsModel(), data_dir=tmp_data_dir)
+    res = p.run(asset, ctx)
+    assert res["status"] == "ok"
+    assert "small" in res["sizes"] and "medium" in res["sizes"]
+
+    small = Image.open(tmp_data_dir / "thumbs" / "99" / "small.jpg")
+    assert small.size == (320, 213)  # 1200x800 -> 320 wide, aspect preserved
+    medium = Image.open(tmp_data_dir / "thumbs" / "99" / "medium.jpg")
+    assert medium.size[0] <= 1280 and medium.size[1] <= 1280
+    assert res["width"] == 1200 and res["height"] == 800
+
+
+def test_thumbnail_video_placeholder(tmp_data_dir, tmp_path: Path):
+    """Videos without ffmpeg fall back to a deterministic placeholder so the
+    grid never shows a broken tile."""
+    from PIL import Image
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.thumbnail import ThumbnailPlugin
+
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"fragmented fake video payload")
+
+    p = ThumbnailPlugin()
+    asset = AssetLike(
+        id=98, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="vid",
+    )
+    ctx = PluginContext(asset=asset, params=p.ParamsModel(), data_dir=tmp_data_dir)
+    res = p.run(asset, ctx)
+    assert res["status"] == "ok"
+    ph = tmp_data_dir / "thumbs" / "98" / "_frame.png"
+    assert ph.is_file()
+    im = Image.open(ph)
+    assert im.size == (320, 320)
+
+
+def test_thumbnail_endpoint(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_library(tmp_data_dir, tmp_path, n=2)
+    app = create_app()
+    with TestClient(app) as c:
+        for size in ("small", "medium", "placeholder"):
+            r = c.get(f"/api/assets/1/thumbnail?size={size}")
+            assert r.status_code == 200, f"size={size} -> {r.status_code}"
+            assert r.headers["content-type"].startswith("image/")
+            assert len(r.content) > 0

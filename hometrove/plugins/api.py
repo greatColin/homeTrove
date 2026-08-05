@@ -7,6 +7,7 @@ described in the project README §8.2, narrowed to the minimum sufficient set.
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel
@@ -46,12 +47,15 @@ class PluginContext:
     current SQLAlchemy ``Session`` when the orchestrator supplies one (needed
     by plugins that match against the library, e.g. face.match); it is
     ``None`` in contexts without a database (unit tests, dry runs).
+    ``data_dir`` is the resolved runtime data directory, used by plugins that
+    write derived artifacts (e.g. thumbnails).
     """
 
-    def __init__(self, asset: AssetLike, params: Any, db: Any = None) -> None:
+    def __init__(self, asset: AssetLike, params: Any, db: Any = None, data_dir: Optional[Path] = None) -> None:
         self.asset = asset
         self._params = params
         self.db = db
+        self.data_dir = data_dir
 
     @property
     def params(self) -> Any:

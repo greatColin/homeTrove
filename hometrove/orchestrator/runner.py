@@ -10,6 +10,7 @@ import time
 
 from sqlalchemy.orm import Session
 
+from hometrove.config import get_settings
 from hometrove.models import Asset, Job, PluginConfig, PluginResult
 from hometrove.plugins import (
     AssetLike,
@@ -52,7 +53,7 @@ def run_one(job_id: int, session: Session) -> None:
         mtime=asset.mtime,
         content_hash_prefix=asset.content_hash,
     )
-    ctx = PluginContext(asset=asset_like, params=params, db=session)
+    ctx = PluginContext(asset=asset_like, params=params, db=session, data_dir=get_settings().resolved_data_dir())
 
     job.state = "running"
     job.started_at = _now()

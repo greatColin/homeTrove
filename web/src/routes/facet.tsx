@@ -1,29 +1,29 @@
 import { useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, mediaLabel, type AssetDTO } from "../lib/api";
+import { api, mediaLabel, thumbUrl, type AssetDTO } from "../lib/api";
 import { FacetChips } from "../components/kv";
 
 function FacetThumb({ asset }: { asset: AssetDTO }) {
+  const isImage = asset.media_type === "image";
   return (
     <Link
       to={`/asset/${asset.id}`}
       className="group relative m-[2px] aspect-[4/3] overflow-hidden rounded-sm bg-neutral-200 dark:bg-neutral-800"
     >
-      {asset.media_type === "image" ? (
-        <img
-          src={`/api/assets/${asset.id}/file`}
-          alt=""
-          loading="lazy"
-          className="h-full w-full object-cover transition group-hover:scale-105"
-          onError={(e) => {
-            (e.currentTarget as HTMLImageElement).style.display = "none";
-          }}
-        />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center text-neutral-400">
-          <span className="text-xs font-medium">{mediaLabel(asset.media_type)}</span>
-        </div>
+      <img
+        src={thumbUrl(asset.id, isImage ? "small" : "placeholder")}
+        alt=""
+        loading="lazy"
+        className="h-full w-full object-cover transition group-hover:scale-105"
+        onError={(e) => {
+          (e.currentTarget as HTMLImageElement).style.display = "none";
+        }}
+      />
+      {!isImage && (
+        <span className="absolute inset-0 flex items-center justify-center text-xs font-medium text-white/90">
+          <span className="rounded bg-black/50 px-2 py-0.5">{mediaLabel(asset.media_type)}</span>
+        </span>
       )}
     </Link>
   );
