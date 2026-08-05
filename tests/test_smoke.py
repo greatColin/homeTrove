@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import struct
 import tempfile
@@ -7,6 +8,7 @@ import zlib
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from hometrove.config import reset_settings_cache
 from hometrove.plugins import REGISTRY
@@ -893,3 +895,493 @@ def test_plugin_context_temp_dir(tmp_data_dir, tmp_path: Path):
     assert d.is_dir()
     assert d == tmp_data_dir / "plugin-tmp" / "90"
     assert ctx.temp_dir() == d
+
+
+def test_sqlite_vec_index_search(tmp_data_dir):
+    """vec0 nearest-neighbour search returns (id, distance) sorted by distance."""
+    from hometrove.vector import SQLiteVecIndex
+
+    def v(d1: float, d2: float, d3: float, d4: float) -> list[float]:
+        vec = [0.0] * 1024
+        vec[0], vec[1], vec[2], vec[3] = d1, d2, d3, d4
+        return vec
+
+    idx = SQLiteVecIndex()
+    idx.upsert(1, v(1.0, 0.0, 0.0, 0.0))
+    idx.upsert(2, v(0.0, 1.0, 0.0, 0.0))
+    idx.upsert(3, v(0.0, 0.9, 0.1, 0.0))
+
+    hits = idx.search(v(1.0, 0.0, 0.0, 0.0), k=3)
+    assert [r[0] for r in hits] == [1, 3, 2]  # exact match first, then 0.9, then orthogonal
+    assert hits[0][1] == 0.0
+
+    # remove() deletes from the index.
+    idx.remove(1)
+    hits = idx.search(v(1.0, 0.0, 0.0, 0.0), k=3)
+    assert 1 not in [r[0] for r in hits]
+
+
+def test_embedding_model_and_index_sync(tmp_data_dir):
+    """An Embedding row plus a vec0 copy stay in sync through get_index()."""
+    import json
+
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Embedding
+    from hometrove.vector import delete_embeddings, get_index
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=100, path="/p/v.mp4", media_root="/p",
+            content_hash="emb1", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        vec = [0.0] * 1024
+        vec[0] = 1.0
+        row = Embedding(
+            asset_id=100, plugin_id="embedding.jina_clip", plugin_version="0.1.0",
+            scope="scene", t_start=0.0, t_end=0.5,
+            embedding_json=json.dumps(vec),
+        )
+        s.add(row)
+        s.flush()
+        get_index().upsert(row.id, vec, session=s)
+        s.commit()
+
+    hits = get_index().search(vec, k=5)
+    assert hits and hits[0][0] == row.id
+
+    # delete_embeddings removes both the row and its index copy.
+    with session_scope() as s:
+        n = delete_embeddings(s, 100, plugin_id="embedding.jina_clip")
+        s.commit()
+        assert n == 1
+        assert s.execute(select(Embedding).where(Embedding.asset_id == 100)).scalars().first() is None
+    hits = get_index().search(vec, k=5)
+    assert not hits
+
+
+def test_embedding_jina_clip_image(tmp_data_dir, tmp_path: Path):
+    """Image asset produces one scope=image vector of VECTOR_DIM."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Embedding
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.embedding_clip import EmbeddingJinaClipPlugin
+
+    src = tmp_path / "img.png"
+    _make_photo(src, 64, 48)
+    with session_scope() as s:
+        s.add(Asset(
+            id=101, path=str(src), media_root=str(src.parent),
+            content_hash="embi", media_type="image",
+            created_at=0, updated_at=0,
+        ))
+        s.commit()
+
+    p = EmbeddingJinaClipPlugin()
+    asset = AssetLike(
+        id=101, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="embi",
+    )
+    with session_scope() as s:
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+        assert res["status"] == "ok"
+        assert res["scope"] == "image"
+        assert res["vectors"] == 1
+        assert res["dim"] == 1024
+
+        rows = s.execute(select(Embedding).where(Embedding.asset_id == 101)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].scope == "image"
+        vec = json.loads(rows[0].embedding_json)
+        assert len(vec) == 1024
+
+    # Re-running is idempotent: still exactly one row.
+    with session_scope() as s:
+        p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+        rows = s.execute(select(Embedding).where(Embedding.asset_id == 101)).scalars().all()
+        assert len(rows) == 1
+
+
+def test_embedding_jina_clip_video_scenes(tmp_data_dir, tmp_path: Path):
+    """Video with scene_detect output yields one scope=scene vector per scene."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Embedding, PluginResult
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.embedding_clip import EmbeddingJinaClipPlugin
+
+    src = tmp_path / "clip.mp4"
+    _make_scene_video(src, [(40, 12), (200, 12)])
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=102, path=str(src), media_root=str(src.parent),
+            content_hash="embv", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        s.add(PluginResult(
+            asset_id=102, plugin_id="basic.scene_detect", plugin_version="0.1.0",
+            status="ok",
+            result_json=json.dumps({
+                "scenes": [
+                    {"start": 0.0, "end": 0.5, "keyframe": 0.25},
+                    {"start": 0.5, "end": 1.0, "keyframe": 0.75},
+                ]
+            }),
+        ))
+        s.commit()
+
+    p = EmbeddingJinaClipPlugin()
+    asset = AssetLike(
+        id=102, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="embv",
+    )
+    with session_scope() as s:
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+        assert res["status"] == "ok"
+        assert res["scope"] == "scene"
+        assert res["vectors"] == 2
+
+        rows = s.execute(
+            select(Embedding).where(Embedding.asset_id == 102).order_by(Embedding.t_start)
+        ).scalars().all()
+        assert len(rows) == 2
+        assert [r.scope for r in rows] == ["scene", "scene"]
+        assert rows[0].t_start == 0.0 and rows[0].t_end == 0.5
+        assert rows[1].t_start == 0.5 and rows[1].t_end == 1.0
+
+
+def test_embedding_jina_clip_video_no_scenes_falls_back(tmp_data_dir, tmp_path: Path):
+    """Video without scene_detect output still gets one cover-frame vector."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Embedding
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.embedding_clip import EmbeddingJinaClipPlugin
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, 160, 120, frames=12)
+    with session_scope() as s:
+        s.add(Asset(
+            id=103, path=str(src), media_root=str(src.parent),
+            content_hash="embf", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        s.commit()
+
+    p = EmbeddingJinaClipPlugin()
+    asset = AssetLike(
+        id=103, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="embf",
+    )
+    with session_scope() as s:
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+        assert res["status"] == "ok"
+        assert res["scope"] == "image"
+        assert res["vectors"] == 1
+        rows = s.execute(select(Embedding).where(Embedding.asset_id == 103)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].scope == "image"
+
+
+def test_enqueue_pending_respects_disabled_plugins(tmp_data_dir, tmp_path: Path):
+    """Disabled plugins get no jobs from enqueue_pending."""
+    from hometrove.db import session_scope
+    from hometrove.models import Job, PluginConfig
+    from hometrove.scanner import discover, enqueue_pending, upsert_assets
+
+    media = tmp_path / "photos"
+    media.mkdir()
+    make_png(media / "a.png", 10, 10)
+
+    with session_scope() as s:
+        upsert_assets(s, list(discover([media])))
+        s.add(PluginConfig(plugin_id="thumbnail", enabled=0))
+        s.add(PluginConfig(plugin_id="exif", enabled=0))
+        s.commit()
+
+        enqueue_pending(s)
+
+        enqueued = set(
+            s.scalars(
+                select(Job.plugin_id).where(Job.state == "pending")
+            ).all()
+        )
+        assert "thumbnail" not in enqueued
+        assert "exif" not in enqueued
+        assert "basic.info" in enqueued
+
+        # Re-enabling makes the plugin enqueueable again.
+        row = s.get(PluginConfig, "thumbnail")
+        row.enabled = 1
+        s.commit()
+        assert enqueue_pending(s) > 0
+        reenqueued = set(
+            s.scalars(
+                select(Job.plugin_id).where(Job.state == "pending")
+            ).all()
+        )
+        assert "thumbnail" in reenqueued
+
+
+def test_worker_claim_skips_disabled_plugin_jobs(tmp_data_dir, tmp_path: Path):
+    """Worker refuses to claim jobs whose plugin is disabled (parked, not lost)."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Job, PluginConfig, PluginResult
+    from hometrove.worker.main import _claim_next
+
+    # Use a standalone plugin with no DAG dependencies so the disabled one is
+    # claimable without depending on an already-consumed job.
+    with session_scope() as s:
+        s.add(Asset(
+            id=201, path="x.png", media_root=".", content_hash="w1",
+            media_type="image", created_at=0, updated_at=0,
+        ))
+        # mock.tags depends on basic.info -> provide a done result so the
+        # parked job becomes claimable once the plugin is re-enabled.
+        s.add(PluginResult(
+            asset_id=201, plugin_id="basic.info", plugin_version="0.1.0",
+            status="ok", result_json="{}",
+        ))
+        s.add(Job(asset_id=201, plugin_id="mock.tags", state="pending", enqueued_at=1))
+        s.add(Job(asset_id=201, plugin_id="thumbnail", state="pending", enqueued_at=2))
+        s.add(PluginConfig(plugin_id="mock.tags", enabled=0))
+        s.commit()
+
+        # thumbnail (enabled) is claimable; mock.tags (disabled) is parked.
+        j = _claim_next(s, "")
+        assert j is not None and j.plugin_id == "thumbnail"
+        s.commit()
+
+        # Re-enable mock.tags; its parked job becomes claimable.
+        row = s.get(PluginConfig, "mock.tags")
+        row.enabled = 1
+        s.commit()
+        j2 = _claim_next(s, "")
+        assert j2 is not None and j2.plugin_id == "mock.tags"
+
+
+def test_plugins_api_list_and_toggle(tmp_data_dir):
+    """GET /api/plugins lists all; PUT disables and re-enables."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import PluginConfig
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/plugins")
+        assert r.status_code == 200
+        items = {x["id"]: x for x in r.json()["items"]}
+        assert "basic.info" in items
+        assert items["basic.info"]["enabled"] is True
+
+        r = c.put("/api/plugins/exif", json={"enabled": False})
+        assert r.status_code == 200
+        assert r.json()["enabled"] is False
+
+        r = c.get("/api/plugins")
+        items = {x["id"]: x for x in r.json()["items"]}
+        assert items["exif"]["enabled"] is False
+
+        r = c.put("/api/plugins/exif", json={"enabled": True})
+        assert r.status_code == 200
+        assert r.json()["enabled"] is True
+
+    with session_scope() as s:
+        row = s.get(PluginConfig, "exif")
+        assert row is not None and row.enabled == 1
+
+
+def test_plugin_shutdown_releases_resources(tmp_data_dir):
+    """Disabling a plugin via the API calls its shutdown() hook."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+
+    # face.detect holds a shared FaceAnalysis instance; simulate a loaded app
+    # and verify disabling drops it. Note: the module-level ``_get_app`` is
+    # monkeypatched by the ``tmp_data_dir`` fixture to force "no model", so we
+    # assert on the shared ``_APP`` slot directly.
+    import hometrove.plugins.builtin.face_detect as fd
+
+    fake = object()
+    fd._APP = fake
+    assert fd._APP is fake
+
+    with TestClient(app) as c:
+        r = c.put("/api/plugins/face.detect", json={"enabled": False})
+        assert r.status_code == 200
+        assert r.json()["enabled"] is False
+
+    assert fd._APP is None
+
+
+def _add_asset_and_embedding(
+    s,
+    asset_id: int,
+    *,
+    vec: list[float],
+    scope: str = "image",
+    t_start: float | None = None,
+    t_end: float | None = None,
+    plugin_id: str = "embedding.jina_clip",
+) -> int:
+    """Insert an Asset + Embedding + vec0 copy; returns the embedding id."""
+    import json
+
+    from hometrove.models import Asset, Embedding
+    from hometrove.vector import get_index
+
+    s.add(Asset(
+        id=asset_id, path=f"/m/a{asset_id}.png", media_root="/m",
+        content_hash=f"h{asset_id}", media_type="image",
+        created_at=0, updated_at=0,
+    ))
+    row = Embedding(
+        asset_id=asset_id, plugin_id=plugin_id, plugin_version="0.1.0",
+        scope=scope, t_start=t_start, t_end=t_end,
+        embedding_json=json.dumps(vec),
+    )
+    s.add(row)
+    s.flush()
+    get_index().upsert(row.id, vec, session=s)
+    return row.id
+
+
+def _unit_vec(hot_dim: int) -> list[float]:
+    """1024-dim unit vector with a single hot dimension."""
+    v = [0.0] * 1024
+    v[hot_dim] = 1.0
+    return v
+
+
+def _search_session():
+    from hometrove.db import session_factory
+
+    return session_factory()()
+
+
+def test_search_vector_recall_and_rrf(tmp_data_dir):
+    """Vector recall returns hits; RRF ranks assets across recall paths."""
+    from hometrove.db import session_scope
+    from hometrove.search import search
+
+    with session_scope() as s:
+        # A photo whose vector is close to the query's mock vector.
+        q = "sunset beach"
+        qv = _encode_query_for_test(q)
+        _add_asset_and_embedding(s, 301, vec=qv)
+        # A far photo (orthogonal vector) — lower similarity.
+        far = _unit_vec(0)
+        _add_asset_and_embedding(s, 302, vec=far)
+        s.commit()
+
+    res = search(_search_session(), q)
+    assert res["total"] >= 1
+    # The close photo ranks above the far one (vector distance ordering).
+    ranks = {i["asset_id"]: i["rank"] for i in res["items"]}
+    assert 301 in ranks
+    if 302 in ranks:
+        assert ranks[301] < ranks[302]
+
+
+def test_search_scope_prefix_filters(tmp_data_dir):
+    """scope:scene limits recall to scene embeddings."""
+    from hometrove.db import session_scope
+    from hometrove.search import search
+
+    with session_scope() as s:
+        _add_asset_and_embedding(s, 311, vec=_unit_vec(1), scope="image")
+        _add_asset_and_embedding(s, 312, vec=_unit_vec(1), scope="scene", t_start=1.0, t_end=2.0)
+        s.commit()
+
+    res = search(_search_session(), "scope:scene sample")
+    assert all(i["scope"] == "scene" for i in res["items"])
+    assert any(i["asset_id"] == 312 for i in res["items"])
+
+
+def test_search_video_hit_carries_seek_metadata(tmp_data_dir):
+    """A scene-scope video hit exposes t_start/t_end for jump-to-second."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+    from hometrove.search import search
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=321, path="/m/clip.mp4", media_root="/m",
+            content_hash="h321", media_type="video",
+            duration_sec=10.0, created_at=0, updated_at=0,
+        ))
+        from hometrove.vector import get_index
+        import json
+        from hometrove.models import Embedding
+        row = Embedding(
+            asset_id=321, plugin_id="embedding.jina_clip", plugin_version="0.1.0",
+            scope="scene", t_start=4.0, t_end=6.0,
+            embedding_json=json.dumps(_unit_vec(2)),
+        )
+        s.add(row)
+        s.flush()
+        get_index().upsert(row.id, _unit_vec(2), session=s)
+        s.commit()
+
+    res = search(_search_session(), "scope:scene beach")
+    hit = next((i for i in res["items"] if i["asset_id"] == 321), None)
+    assert hit is not None
+    assert hit["media_type"] == "video"
+    assert hit["can_seek"] is True
+    assert hit["t_start"] == 4.0 and hit["t_end"] == 6.0
+
+
+def test_search_keyword_recall(tmp_data_dir):
+    """Keyword path matches text-bearing plugin results."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+    from hometrove.search import search
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=331, path="/m/cat.png", media_root="/m",
+            content_hash="h331", media_type="image",
+            created_at=0, updated_at=0,
+        ))
+        s.add(PluginResult(
+            asset_id=331, plugin_id="mock.tags", plugin_version="0.1.0",
+            status="ok", result_json='{"tags":["cat","pet"]}',
+        ))
+        s.commit()
+
+    res = search(_search_session(), "cat")
+    assert any(i["asset_id"] == 331 for i in res["items"])
+
+
+def test_search_api_shape(tmp_data_dir):
+    """GET /api/search returns the documented response shape."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.db import reset_engine
+
+    reset_engine()
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/search", params={"q": "beach"})
+        assert r.status_code == 200
+        body = r.json()
+        assert set(body) == {"query", "total", "items"}
+        assert body["query"] == "beach"
+
+        # Missing q -> 422.
+        r2 = c.get("/api/search")
+        assert r2.status_code == 422
+
+
+def _encode_query_for_test(q: str) -> list[float]:
+    """Mirror of hometrove.search._encode_query (deterministic)."""
+    from hometrove.search import _encode_query
+
+    return _encode_query(q)

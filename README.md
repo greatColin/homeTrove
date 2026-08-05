@@ -133,10 +133,10 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 - [x] M1-3 `basic.scene_detect` 视频场景切分（PySceneDetect + pyav 后端，输出场景秒范围 + keyframe）
 - [x] M1-4 `face.detect` 真实人脸（InsightFace SCRFD+ArcFace 512 维，CPU onnxruntime；图片全帧 + 视频 keyframe 抽帧去重）
 - [ ] M1-5 `vlm.qwen3vl` 中文描述（前置已就位：`PluginContext.image()/frames()/result_of()` 共享缓存 + `resolve_asset_path`）
-- [ ] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec）
-- [ ] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒）
+- [x] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec 接入，`embeddings` 表 image/scene scope；**当前 mock 向量阶段**，caption scope 待 M1-5）
+- [x] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒；**当前 mock 向量阶段**）
 - [ ] M1-8 `/albums` `/tags` `/places` 分类页（`/tags` `/categories` 模拟页已就绪、`/people` 已实现）
-- [ ] M1-9 `/settings/plugins` 插件管理（开关 + ParamsModel 表单 + 定向重跑）
+- [x] M1-9 `/settings/plugins` 插件管理（**开关已落地**：`/api/plugins` + `/plugins` 页；禁用插件不入队/停驻、重启用恢复、禁用时 `shutdown()` 释放内存；参数表单待补）
 - [ ] M1-10 `asr.faster_whisper` 语音转写
 - [ ] M1-11 鉴权骨架（默认放行，为多用户预留）
 
@@ -149,7 +149,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-5 前置已就位（`PluginContext` 共享缓存 + `resolve_asset_path`，34 测试全绿）；M1-6 `embedding.jina_clip` + `embedding.bge_m3` 待推进（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
+**下一项：M1-7 已推进（`/search` 双路召回 + RRF + 视频跳秒，mock 向量阶段）；M1-8 `/albums` `/tags` `/places` 分类页待推进（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
 
 ---
 
