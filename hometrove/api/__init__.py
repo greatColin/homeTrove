@@ -14,7 +14,18 @@ from hometrove.db import engine, session_scope
 import hometrove.plugins.builtin  # noqa: F401  registers basic.info + mock plugins
 from hometrove.plugins.registry import REGISTRY
 from hometrove.uploads import UploadManager, build_router as build_uploads_router
-from hometrove.api.routes import assets, facets, folders, jobs, health, persons, plugins, search
+from hometrove.api.routes import (
+    albums,
+    assets,
+    facets,
+    folders,
+    jobs,
+    health,
+    persons,
+    places,
+    plugins,
+    search,
+)
 from hometrove.models import PluginConfig
 
 
@@ -71,6 +82,8 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(plugins.router)
     app.include_router(search.router)
+    app.include_router(albums.router)
+    app.include_router(places.router)
 
     dist = _web_dist_dir()
     if dist is not None:

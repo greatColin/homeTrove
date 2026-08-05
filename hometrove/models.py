@@ -175,6 +175,49 @@ class Embedding(Base):
     )
 
 
+class Album(Base):
+    """A manually curated collection of assets.
+
+    ``cover_asset_id`` optionally pins a representative photo for the album
+    list grid; when null the frontend falls back to the first asset by
+    position. Assets are ordered by ``AlbumAsset.position``.
+    """
+
+    __tablename__ = "albums"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    cover_asset_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("assets.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+    items: Mapped[list["AlbumAsset"]] = relationship(
+        back_populates="album",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="AlbumAsset.position",
+    )
+
+
+class AlbumAsset(Base):
+    __tablename__ = "album_assets"
+
+    album_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("albums.id", ondelete="CASCADE"), primary_key=True,
+    )
+    asset_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("assets.id", ondelete="CASCADE"), primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    added_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+    album: Mapped[Album] = relationship(back_populates="items")
+    asset: Mapped[Asset] = relationship()
+
+
 class PluginConfig(Base):
     __tablename__ = "plugin_config"
 
