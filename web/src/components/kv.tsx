@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 
 export const PLUGIN_LABELS: Record<string, string> = {
   "basic.info": "基本信息",
+  "thumbnail": "缩略图",
+  "exif": "EXIF 元数据",
   "mock.tags": "标签（模拟）",
   "mock.category": "分类（模拟）",
   "mock.faces": "人脸（模拟）",

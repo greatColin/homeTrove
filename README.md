@@ -129,7 +129,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 ### M1 插件扩展（⏳ 进行中，按序号推进）
 
 - [x] M1-1 `thumbnail` 缩略图插件（Pillow 多档位 + 视频占位图，网格真实缩略图）
-- [ ] M1-2 `exif` 插件（相机/镜头/ISO/GPS）
+- [x] M1-2 `exif` 插件（exiftool 常驻进程，相机/镜头/ISO/曝光/GPS）
 - [ ] M1-3 `basic.scene_detect` 视频场景切分
 - [ ] M1-4 `face.insightface` 真实人脸（归组管线已提前就绪，仅需替换 mock 检测器）
 - [ ] M1-5 `vlm.qwen3vl` 中文描述（前置：`PluginContext.image()/frames()/result_of()` 共享缓存）
@@ -149,7 +149,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-2 `exif` 插件。**（注：M1-5 `vlm.qwen3vl` 已另起任务并行开发。）
+**下一项：M1-3 `basic.scene_detect` 视频场景切分。**（注：M1-5 `vlm.qwen3vl` 已另起任务并行开发。）
 
 ---
 

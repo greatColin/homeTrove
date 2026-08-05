@@ -472,3 +472,66 @@ def test_thumbnail_endpoint(tmp_data_dir, tmp_path: Path):
             assert r.status_code == 200, f"size={size} -> {r.status_code}"
             assert r.headers["content-type"].startswith("image/")
             assert len(r.content) > 0
+
+
+def test_exif_plugin_extracts_or_skips(tmp_data_dir, tmp_path: Path):
+    """exiftool must yield camera metadata; without the binary the plugin
+    reports ``skipped`` instead of failing the job."""
+    import shutil
+
+    from PIL import Image
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.exif import ExifPlugin
+
+    src = tmp_path / "photo.jpg"
+    im = Image.new("RGB", (120, 80), (10, 20, 30))
+    exif = im.getexif()
+    exif[0x010F] = "TestCam"
+    exif[0x0110] = "TestCam Model X"
+    exif[0x8827] = 800
+    exif[0x9003] = "2024:01:02 03:04:05"
+    im.save(src, exif=exif)
+
+    p = ExifPlugin()
+    asset = AssetLike(
+        id=42, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="ex",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+
+    if shutil.which("exiftool") is None:
+        assert res["status"] == "skipped"
+        return
+    assert res["status"] == "ok"
+    md = res["metadata"]
+    assert md.get("make") == "TestCam"
+    assert md.get("model") == "TestCam Model X"
+    assert md.get("iso") == 800
+    assert md.get("taken_at_original") == "2024:01:02 03:04:05"
+
+
+def test_exif_reuses_persistent_process(tmp_data_dir, tmp_path: Path):
+    """Repeated calls reuse the stay_open process rather than spawning one."""
+    import shutil
+
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.exif import ExifPlugin, _get_tool
+
+    if shutil.which("exiftool") is None:
+        pytest.skip("exiftool not installed")
+
+    src = tmp_path / "photo.jpg"
+    from PIL import Image
+
+    Image.new("RGB", (10, 10), (1, 2, 3)).save(src)
+    asset = AssetLike(
+        id=43, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="ex2",
+    )
+    p = ExifPlugin()
+    for _ in range(3):
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+        assert res["status"] == "ok"
+    tool = _get_tool()
+    assert tool is not None and tool._proc is not None
+    assert tool._proc.poll() is None  # still alive, reused

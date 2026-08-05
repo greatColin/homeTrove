@@ -5,14 +5,16 @@ not be added here without an RFC.
 """
 
 from hometrove.plugins.builtin.basic_info import BasicInfoPlugin
+from hometrove.plugins.builtin.exif import ExifPlugin
 from hometrove.plugins.builtin.thumbnail import ThumbnailPlugin
 
-__all__ = ["BasicInfoPlugin", "ThumbnailPlugin"]
+__all__ = ["BasicInfoPlugin", "ExifPlugin", "ThumbnailPlugin"]
 
 
 def _register_builtins() -> None:
     from hometrove.plugins.registry import REGISTRY as _R
     _R.register(BasicInfoPlugin())
+    _R.register(ExifPlugin())
     _R.register(ThumbnailPlugin())
     # Mock plugins feed the frontend tag / category / face pages with
     # deterministic sample data. Real plugins replace them in M1.
