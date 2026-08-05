@@ -20,7 +20,13 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from hometrove.plugins.api import AssetLike, Cost, MediaType, PluginContext
+from hometrove.plugins.api import (
+    AssetLike,
+    Cost,
+    MediaType,
+    PluginContext,
+    resolve_asset_path,
+)
 from hometrove.plugins.base import BasePlugin
 
 # Fixed size buckets. Keys are the URL query value for ``/api/assets/{id}/thumbnail``.
@@ -52,15 +58,8 @@ class ThumbnailPlugin(BasePlugin):
         if ctx.data_dir is None:
             return {"status": "skipped", "reason": "no data_dir in context"}
 
-        raw = asset.path
-        if "\0" in raw:
-            _root, rel = raw.split("\0", 1)
-            src = Path(asset.media_root) / rel
-        elif Path(raw).is_absolute():
-            src = Path(raw)
-        else:
-            src = Path(asset.media_root) / raw
-        if not src.is_file():
+        src = resolve_asset_path(asset)
+        if src is None:
             return {"status": "skipped", "reason": "source file missing"}
 
         out_dir = ctx.data_dir / "thumbs" / str(asset.id)

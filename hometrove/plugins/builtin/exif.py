@@ -17,7 +17,13 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from hometrove.plugins.api import AssetLike, Cost, MediaType, PluginContext
+from hometrove.plugins.api import (
+    AssetLike,
+    Cost,
+    MediaType,
+    PluginContext,
+    resolve_asset_path,
+)
 from hometrove.plugins.base import BasePlugin
 
 # Pillow EXIF tag ids we surface, mapped to stable output keys.
@@ -64,15 +70,8 @@ class ExifPlugin(BasePlugin):
     def run(self, asset: AssetLike, ctx: PluginContext) -> dict[str, Any]:
         params: ExifPlugin.ParamsModel = ctx.params  # type: ignore[assignment]
 
-        raw = asset.path
-        if "\0" in raw:
-            _root, rel = raw.split("\0", 1)
-            src = Path(asset.media_root) / rel
-        elif Path(raw).is_absolute():
-            src = Path(raw)
-        else:
-            src = Path(asset.media_root) / raw
-        if not src.is_file():
+        src = resolve_asset_path(asset)
+        if src is None:
             return {"status": "skipped", "reason": "source file missing"}
 
         try:

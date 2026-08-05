@@ -72,7 +72,18 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 | M1-2 | `exif` 插件 | [x] 2026-08-05 | M0 | **纯 Python 0.2.0（已替换 exiftool）**：图片用 Pillow `getexif()` 读相机/镜头/ISO/曝光/焦距/GPS（GPS IFD 转十进制 `gps_lat/gps_lon`）；视频用 PyAV 读 duration/codec/分辨率/fps/rotation/encoder；详情信息栏动态渲染；无 EXIF 时 metadata 为空但 status=ok |
 | M1-3 | `basic.scene_detect` 视频场景切分 | [x] 2026-08-05 | M0 | **纯 Python 0.1.0**：PySceneDetect ContentDetector + `pyav` 后端（scenedetect 自带 opencv 回退）；输出场景起止秒 + `keyframe` 时间戳；结果经 `get_asset.plugin_results` 暴露，供 M1-4/M1-5 共享 |
 | M1-4 | `face.detect` 真实人脸 | [x] 2026-08-05 | M1-3（视频） | **InsightFace buffalo_l（SCRFD 检测 + ArcFace 512 维）on CPU（onnxruntime）**；模型包首次自动下载（唯一非 pip 组件）；图片全帧检测，视频读 `basic.scene_detect` keyframe 抽帧 + 同人 cosine 去重；输出 `{faces:[{embedding,confidence,box}]}` 供 `face.match` 归组；无模型/无 insightface 时 skipped。**说明**：归组管线 M0 已就绪（`face.match` + `/api/persons` 命名反扫/合并），真实检测器就位后直接复用，`faces` 表即既有 `face_embeddings` |
-| M1-5 | `vlm.qwen3vl` 中文描述 | [ ] | M1-3（视频） | 接 VLM 端点；**前置**：`PluginContext.image()/frames()/result_of()` 共享缓存必须就位（当前接口位已预留、未实现） |
+
+#### 人脸归组方案（当前实现，2026-08-05 备注）
+
+实现：`face.detect`（检测）→ `face.match`（归组）→ `hometrove.faces`（匹配核心）。匹配函数：`cosine_similarity`（faces.py）+ `_best_person` / `match_face` / `match_asset_faces` / `name_person_and_backfill` / `merge_persons`。
+
+- **每张照片都存人脸，不去重**：`face.match` 为资产中**每个**检测到的人脸各写一条 `face_embeddings` 记录（N 张照片 = N 条向量）。仅视频**内部**跨帧去重（同人 cosine ≥0.45 跳过，`face.detect` 的 `video_dedup_threshold`），跨照片不去重。
+- **比对目标：库中任意一张脸**，无「主要人脸」概念：`_best_person` 把新向量与库中**全部已存 embedding**逐一算余弦相似度，取全局最高分且 ≥阈值（默认 0.75，`face.match` ParamsModel 可调）者。
+- **不会同时归属两个人**：`_best_person` 遍历全部取最优（非"首个过阈值即返回"），即使与 A、B 两人都过阈值也只归入相似度更高者；全局最高分未过阈值 → 新建 `未命名-<rand>` person。一个向量永远只归属一个 person。
+- **命名反扫**：`name_person_and_backfill` 用该人现有向量均值作代表向量，扫所有 `未命名*` person 中余弦相似度 ≥0.75 的脸拉入该人名下（"命名一次，把旧照片同人拉进来"）。
+- **合并是手动显式操作**：`merge_persons`（API 层），绝不自动合并。
+- **当前实现规模**：纯 Python 全库 O(N) 扫描比对，无向量索引；ANN 索引（sqlite-vec）为 M1-6 升级路径。
+| M1-5 | `vlm.qwen3vl` 中文描述 | [ ] | M1-3（视频） | 接 VLM 端点；**前置已就位**：`PluginContext.image()/frames()/result_of()` 共享缓存已实现并测试（`resolve_asset_path` 统一路径解析；`face.detect` 已消费共享缓存） |
 | M1-6 | `embedding.jina_clip` + `embedding.bge_m3` | [ ] | M1-5 | sqlite-vec 接入；`embeddings` 表（scope=image/scene/caption） |
 | M1-7 | `/search` 语义搜索（双路召回 + RRF 融合） | [ ] | M1-5、M1-6 | 自然语言查询；视频命中从对应秒播放 |
 | M1-8 | `/albums` `/tags` `/places` 分类页 | [ ] | M0 | **说明**：`/tags` `/categories` 已有模拟版页面，真实数据就位后替换；`/people` 已提前实现（人员管理页） |
@@ -206,4 +217,4 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 
 ## 当前进行中
 
-- 最后一勾：**M1 插件扩展**。下一项按序号应为 **M1-3 `basic.scene_detect` 视频场景切分**（或用户指定顺序）。注：M1-5 `vlm.qwen3vl` 已另起任务并行开发，不在此进度单内推进。
+- 最后一勾：**M1 插件扩展**。本线已完成 M1-1~M1-4 与 M1-5 前置基础设施（`PluginContext` 共享缓存 + `resolve_asset_path`，34 测试全绿）。下一项按序号应为 **M1-6 `embedding.jina_clip` + `embedding.bge_m3`**（或用户指定顺序）。注：M1-5 `vlm.qwen3vl` 已另起任务并行开发，不在此进度单内推进。

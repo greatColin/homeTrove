@@ -39,6 +39,30 @@ class AssetLike(BaseModel):
     content_hash_prefix: Optional[str] = None
 
 
+def resolve_asset_path(asset: AssetLike) -> Optional[Path]:
+    """Resolve an asset's on-disk file from its ``path`` column.
+
+    Two layouts are supported:
+      * scanned media:   ``{media_root}\0{relative}``
+      * uploaded media:  ``uploads\0{absolute_staging_path}``
+    Returns ``None`` when the file cannot be resolved or is not a regular file.
+    """
+    raw = asset.path
+    if "\0" in raw:
+        kind, _, rest = raw.partition("\0")
+        if kind == "uploads":
+            src = Path(rest)
+        else:
+            src = Path(asset.media_root) / rest
+    elif Path(raw).is_absolute():
+        src = Path(raw)
+    else:
+        src = Path(asset.media_root) / raw
+    if src.is_file():
+        return src
+    return None
+
+
 class PluginContext:
     """Per-call context.
 
@@ -49,6 +73,11 @@ class PluginContext:
     ``None`` in contexts without a database (unit tests, dry runs).
     ``data_dir`` is the resolved runtime data directory, used by plugins that
     write derived artifacts (e.g. thumbnails).
+
+    ``image()`` / ``frames()`` / ``result_of()`` / ``temp_dir()`` form the
+    shared-cache surface (M1-5): expensive decodes and upstream plugin reads
+    are memoized per-call, so several plugins touching the same asset do not
+    each re-decode the file or re-query the database.
     """
 
     def __init__(self, asset: AssetLike, params: Any, db: Any = None, data_dir: Optional[Path] = None) -> None:
@@ -56,6 +85,9 @@ class PluginContext:
         self._params = params
         self.db = db
         self.data_dir = data_dir
+        self._image_cache: dict[tuple, Any] = {}
+        self._frames_cache: dict[tuple, list[Any]] = {}
+        self._result_cache: dict[str, Optional[dict]] = {}
 
     @property
     def params(self) -> Any:
@@ -63,3 +95,128 @@ class PluginContext:
 
     def report_progress(self, frac: float, msg: str = "") -> None:  # noqa: ARG002
         return None
+
+    # ----- shared decode / upstream-read cache (M1-5) -----
+
+    def image(self, *, max_side: Optional[int] = None) -> Any:
+        """Decode the asset once and return an RGB numpy array.
+
+        ``max_side`` caps the longest edge (aspect-preserving). Same call
+        shape hits the memo; a different ``max_side`` re-decodes.
+        """
+        import numpy as np
+
+        key = ("image", max_side)
+        cached = self._image_cache.get(key)
+        if cached is not None:
+            return cached
+
+        src = resolve_asset_path(self.asset)
+        arr: Any = None
+        if src is not None:
+            try:
+                from PIL import Image
+
+                with Image.open(src) as im:
+                    im = im.convert("RGB")
+                    if max_side is not None and max(im.size) > max_side:
+                        im.thumbnail((max_side, max_side))
+                    arr = np.asarray(im)
+            except Exception:  # noqa: BLE001  — undecodable => None
+                arr = None
+        self._image_cache[key] = arr
+        return arr
+
+    def frames(
+        self,
+        *,
+        count: int = 8,
+        at_seconds: Optional[list[float]] = None,
+    ) -> list[Any]:
+        """Return up to ``count`` RGB numpy frames for a video asset.
+
+        ``at_seconds`` explicitly selects timestamps (e.g. scene keyframes);
+        otherwise ``count`` evenly spaced points are sampled. Memoized per
+        ``(count, tuple(at_seconds))`` — repeated calls across plugins reuse
+        the decoded frames instead of re-seeking.
+        """
+        import numpy as np
+
+        key = ("frames", count, tuple(at_seconds) if at_seconds is not None else None)
+        cached = self._frames_cache.get(key)
+        if cached is not None:
+            return cached
+
+        src = resolve_asset_path(self.asset)
+        out: list[Any] = []
+        if src is not None and self.asset.media_type == MediaType.VIDEO.value:
+            try:
+                import av
+
+                times = at_seconds
+                if times is None:
+                    with av.open(str(src)) as container:
+                        duration = float(container.duration or 0) / 1_000_000
+                    times = [
+                        duration * (i + 0.5) / count for i in range(count)
+                    ] if duration > 0 else [0.0]
+
+                with av.open(str(src)) as container:
+                    stream = container.streams.video[0]
+                    for ts in times:
+                        container.seek(int(ts * 1_000_000), stream=stream)
+                        for frame in container.decode(video=0):
+                            arr = np.asarray(frame.to_ndarray(format="rgb24"))
+                            out.append(arr)
+                            break
+            except Exception:  # noqa: BLE001  — undecodable => []
+                out = []
+        self._frames_cache[key] = out
+        return out
+
+    def result_of(self, plugin_id: str) -> Optional[dict]:
+        """Read another plugin's latest output for this asset from the DB.
+
+        Returns ``None`` when the plugin has no successful result (or there is
+        no database context). Memoized per ``plugin_id``.
+        """
+        if plugin_id in self._result_cache:
+            return self._result_cache[plugin_id]
+        out: Optional[dict] = None
+        if self.db is not None:
+            import json
+
+            from sqlalchemy import select
+
+            from hometrove.models import PluginResult
+
+            row = self.db.execute(
+                select(PluginResult)
+                .where(
+                    PluginResult.asset_id == self.asset.id,
+                    PluginResult.plugin_id == plugin_id,
+                    PluginResult.status == "ok",
+                )
+                .order_by(PluginResult.finished_at.desc())
+            ).scalars().first()
+            if row is not None:
+                try:
+                    out = json.loads(row.result_json or "{}")
+                except json.JSONDecodeError:
+                    out = {}
+        self._result_cache[plugin_id] = out
+        return out
+
+    def temp_dir(self) -> Path:
+        """Per-asset scratch directory under the runtime data dir.
+
+        Created lazily and reused within a single call so plugins can drop
+        derived artifacts (extracted audio, staged files) without polluting
+        the media root.
+        """
+        from hometrove.config import get_settings
+
+        base = self.data_dir or get_settings().resolved_data_dir()
+        d = Path(base) / "plugin-tmp" / str(self.asset.id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d

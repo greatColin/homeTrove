@@ -751,3 +751,145 @@ def test_face_detect_video_samples_keyframes(tmp_data_dir, tmp_path: Path, monke
     # Same identity across sampled frames is deduped to a single face.
     assert res["detected"] == 1
     assert res["frames_sampled"] >= 1
+
+
+def test_plugin_context_image_cache(tmp_data_dir, tmp_path: Path):
+    """image() decodes once per key; a different max_side re-decodes."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+
+    src = tmp_path / "img.png"
+    _make_photo(src, 400, 300)
+    asset = AssetLike(
+        id=70, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="ctx1",
+    )
+    ctx = PluginContext(asset=asset, params=None)
+
+    img = ctx.image()
+    assert img is not None
+    assert img.shape == (300, 400, 3)  # decoded RGB, no downscale
+    assert ctx.image() is img  # same key -> memo hit (same object)
+
+    small = ctx.image(max_side=100)
+    assert small.shape == (75, 100, 3)  # aspect preserved
+    assert small is not img  # different key -> re-decode
+
+
+def test_plugin_context_image_none_for_undecodable(tmp_path: Path):
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+
+    src = tmp_path / "bad.jpg"
+    src.write_bytes(b"not an image")
+    asset = AssetLike(
+        id=71, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="ctx2",
+    )
+    ctx = PluginContext(asset=asset, params=None)
+    assert ctx.image() is None
+
+
+def test_plugin_context_frames_cache(tmp_data_dir, tmp_path: Path):
+    """frames() returns a stable sample list memoized per (count, at_seconds)."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, 160, 120, frames=24)  # ~1s at 24fps
+    asset = AssetLike(
+        id=72, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="ctx3",
+    )
+    ctx = PluginContext(asset=asset, params=None)
+
+    frames = ctx.frames(count=3)
+    assert len(frames) == 3
+    assert all(f is not None and f.ndim == 3 for f in frames)
+    assert ctx.frames(count=3) is frames  # memoized list identity
+
+    # Different count -> different decode result.
+    assert ctx.frames(count=4) is not frames
+
+    # Explicit at_seconds selects timestamps.
+    timed = ctx.frames(at_seconds=[0.25, 0.75])
+    assert len(timed) == 2
+    assert timed is not frames
+
+
+def test_plugin_context_frames_empty_for_image(tmp_path: Path):
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+
+    src = tmp_path / "img.png"
+    _make_photo(src, 64, 48)
+    asset = AssetLike(
+        id=73, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="ctx4",
+    )
+    ctx = PluginContext(asset=asset, params=None)
+    assert ctx.frames(count=3) == []
+
+
+def test_plugin_context_result_of(tmp_data_dir, tmp_path: Path):
+    """result_of() reads the latest ok row from the DB and memoizes it."""
+    import json
+
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, 160, 120, frames=12)
+    with session_scope() as s:
+        s.add(Asset(
+            id=80, path=str(src), media_root=str(src.parent),
+            content_hash="ctx5", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        s.add(PluginResult(
+            asset_id=80, plugin_id="basic.scene_detect", plugin_version="0.1.0",
+            status="ok",
+            result_json='{"scenes": [{"start": 0.0, "end": 0.5, "keyframe": 0.25}]}',
+            finished_at=100,
+        ))
+        s.commit()
+
+    asset = AssetLike(
+        id=80, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="ctx5",
+    )
+    with session_scope() as s:
+        ctx = PluginContext(asset=asset, params=None, db=s)
+        data = ctx.result_of("basic.scene_detect")
+        assert data == {"scenes": [{"start": 0.0, "end": 0.5, "keyframe": 0.25}]}
+        assert ctx.result_of("basic.scene_detect") is data  # memoized
+
+        # Unknown plugin -> None.
+        assert ctx.result_of("nonexistent") is None
+
+
+def test_plugin_context_result_of_without_db(tmp_path: Path):
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+
+    src = tmp_path / "img.png"
+    _make_photo(src, 32, 24)
+    asset = AssetLike(
+        id=81, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="ctx6",
+    )
+    ctx = PluginContext(asset=asset, params=None)
+    assert ctx.result_of("basic.scene_detect") is None
+
+
+def test_plugin_context_temp_dir(tmp_data_dir, tmp_path: Path):
+    """temp_dir() returns a per-asset scratch dir under the data dir."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+
+    src = tmp_path / "img.png"
+    _make_photo(src, 32, 24)
+    asset = AssetLike(
+        id=90, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="ctx7",
+    )
+    ctx = PluginContext(asset=asset, params=None, data_dir=tmp_data_dir)
+    d = ctx.temp_dir()
+    assert d.is_dir()
+    assert d == tmp_data_dir / "plugin-tmp" / "90"
+    assert ctx.temp_dir() == d

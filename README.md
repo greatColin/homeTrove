@@ -132,7 +132,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 - [x] M1-2 `exif` 插件（纯 Python：Pillow EXIF + PyAV 视频元数据，相机/镜头/ISO/曝光/GPS；已替换 exiftool）
 - [x] M1-3 `basic.scene_detect` 视频场景切分（PySceneDetect + pyav 后端，输出场景秒范围 + keyframe）
 - [x] M1-4 `face.detect` 真实人脸（InsightFace SCRFD+ArcFace 512 维，CPU onnxruntime；图片全帧 + 视频 keyframe 抽帧去重）
-- [ ] M1-5 `vlm.qwen3vl` 中文描述（前置：`PluginContext.image()/frames()/result_of()` 共享缓存）
+- [ ] M1-5 `vlm.qwen3vl` 中文描述（前置已就位：`PluginContext.image()/frames()/result_of()` 共享缓存 + `resolve_asset_path`）
 - [ ] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec）
 - [ ] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒）
 - [ ] M1-8 `/albums` `/tags` `/places` 分类页（`/tags` `/categories` 模拟页已就绪、`/people` 已实现）
@@ -149,7 +149,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-5 `vlm.qwen3vl` 中文描述（另起任务并行开发）。**
+**下一项：M1-5 前置已就位（`PluginContext` 共享缓存 + `resolve_asset_path`，34 测试全绿）；M1-6 `embedding.jina_clip` + `embedding.bge_m3` 待推进（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
 
 ---
 
@@ -532,7 +532,7 @@ class PluginContext:
 
 缓存 Key 包含 `asset_id + 关键参数`，参数变化时自动 miss。
 
-> **现状**：M0 接口位已预留（`report_progress` 为 no-op、`db` 已注入）；`image()/frames()/result_of()/temp_dir()` 待 M1-5 前实现。
+> **现状**：`PluginContext` 已实现 `image()/frames()/result_of()/temp_dir()` 共享缓存（M1-5）：`image(max_side=)` 按需缩放并记忆化、`frames(count=, at_seconds=)` 抽帧记忆化、`result_of(plugin_id)` 读 DB 中该插件最新的 ok 结果并记忆化、`temp_dir()` 提供 `{data_dir}/plugin-tmp/{asset_id}` 隔离目录；另提供模块级 `resolve_asset_path()` 统一解析 scanned/uploads 两种路径布局。缓存 Key 含参数，参数变化时自动 miss。`face.detect` 已改为通过 `ctx.image()/ctx.frames()/ctx.result_of()` 消费共享缓存，`exif/thumbnail/basic.scene_detect` 统一走 `resolve_asset_path()`（EXIF/视频元数据与全量场景扫描无法复用像素级缓存，故各自保持本地解码）。
 
 #### 8.3.3 结果按插件分行存储，合并只发生在读取时
 

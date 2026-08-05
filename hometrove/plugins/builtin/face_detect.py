@@ -17,15 +17,18 @@ Output shape matches what ``face.match`` consumes:
 
 from __future__ import annotations
 
-import json
 import threading
-from pathlib import Path
 from typing import Any, Optional
 
-import numpy as np
 from pydantic import BaseModel
 
-from hometrove.plugins.api import AssetLike, Cost, MediaType, PluginContext
+from hometrove.plugins.api import (
+    AssetLike,
+    Cost,
+    MediaType,
+    PluginContext,
+    resolve_asset_path,
+)
 from hometrove.plugins.base import BasePlugin
 
 # FaceAnalysis is ~50ms cold import; keep one instance per process.
@@ -58,27 +61,8 @@ def _get_app() -> Optional[Any]:
     return _APP
 
 
-def _resolve_src(asset: AssetLike) -> Optional[Path]:
-    raw = asset.path
-    if "\0" in raw:
-        _root, rel = raw.split("\0", 1)
-        src = Path(asset.media_root) / rel
-    elif Path(raw).is_absolute():
-        src = Path(raw)
-    else:
-        src = Path(asset.media_root) / raw
-    return src if src.is_file() else None
-
-
-def _load_rgb(src: Path) -> Optional[np.ndarray]:
-    try:
-        from PIL import Image
-
-        with Image.open(src) as im:
-            im = im.convert("RGB")
-            return np.asarray(im)
-    except Exception:  # noqa: BLE001
-        return None
+def _resolve_src(asset: AssetLike) -> Optional[Any]:
+    return resolve_asset_path(asset)
 
 
 class FaceDetectPlugin(BasePlugin):
@@ -131,8 +115,7 @@ class FaceDetectPlugin(BasePlugin):
         app: Any,
         params: Any,
     ) -> dict[str, Any]:
-        src = _resolve_src(asset)
-        img = _load_rgb(src) if src is not None else None
+        img = ctx.image()
         if img is None:
             return {"status": "skipped", "reason": "cannot decode image"}
         faces = self._run_app(app, img, params)
@@ -147,31 +130,21 @@ class FaceDetectPlugin(BasePlugin):
     ) -> dict[str, Any]:
         # Pull keyframe timestamps from basic.scene_detect output.
         frame_times: list[float] = []
-        if ctx.db is not None:
-            from hometrove.models import PluginResult
-
-            pr = ctx.db.get(
-                PluginResult, (asset.id, "basic.scene_detect", "0.1.0")
-            )
-            if pr is not None and pr.status == "ok":
-                try:
-                    data = json.loads(pr.result_json or "{}")
-                    scenes = data.get("scenes", [])
-                    frame_times = [
-                        float(s["keyframe"]) for s in scenes if "keyframe" in s
-                    ]
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    frame_times = []
+        data = ctx.result_of("basic.scene_detect")
+        if data:
+            scenes = data.get("scenes", [])
+            frame_times = [
+                float(s["keyframe"]) for s in scenes if "keyframe" in s
+            ]
         if not frame_times:
             frame_times = [0.0]
 
-        src = _resolve_src(asset)
         frame_times = frame_times[: params.max_video_frames]
+        frames = ctx.frames(at_seconds=frame_times)
 
         seen_vecs: list[list[float]] = []
         all_faces: list[dict[str, Any]] = []
-        for ts in frame_times:
-            img = _frame_at(src, ts)
+        for img in frames:
             if img is None:
                 continue
             new_faces = []
@@ -190,7 +163,7 @@ class FaceDetectPlugin(BasePlugin):
             "frames_sampled": len(frame_times),
         }
 
-    def _run_app(self, app: Any, img: np.ndarray, params: Any) -> list[dict[str, Any]]:
+    def _run_app(self, app: Any, img: Any, params: Any) -> list[dict[str, Any]]:
         faces = app.get(img, max_num=params.max_faces)
         out: list[dict[str, Any]] = []
         for f in faces:
@@ -214,19 +187,3 @@ class FaceDetectPlugin(BasePlugin):
             if s > best:
                 best = s
         return best
-
-
-def _frame_at(src: Path, ts: float) -> Optional[np.ndarray]:
-    """Extract one RGB frame at ``ts`` seconds via PyAV."""
-    try:
-        import av
-
-        with av.open(str(src)) as container:
-            stream = container.streams.video[0]
-            container.seek(int(ts * 1_000_000), stream=stream)
-            for frame in container.decode(video=0):
-                rgb = frame.to_ndarray(format="rgb24")
-                return np.asarray(rgb)
-    except Exception:  # noqa: BLE001
-        return None
-    return None
