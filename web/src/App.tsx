@@ -9,8 +9,11 @@ import Upload from "./routes/upload";
 import AssetDetail from "./routes/asset_detail";
 import FacetPage from "./routes/facet";
 import PersonsPage from "./routes/persons";
+import Plugins from "./routes/plugins";
+import Search from "./routes/search";
 
 const nav = [
+  { to: "/search", label: "搜索" },
   { to: "/timeline", label: "时间轴" },
   { to: "/folders", label: "文件夹" },
   { to: "/tags", label: "标签" },
@@ -18,6 +21,7 @@ const nav = [
   { to: "/faces", label: "人脸" },
   { to: "/jobs", label: "索引任务" },
   { to: "/upload", label: "上传" },
+  { to: "/plugins", label: "插件设置" },
 ];
 
 function Brand() {
@@ -109,6 +113,7 @@ export default function App() {
       <main className="flex-1 overflow-auto">
         <Routes>
           <Route path="/" element={<Timeline />} />
+          <Route path="/search" element={<Search />} />
           <Route path="/timeline" element={<Timeline />} />
           <Route path="/folders" element={<Folders />} />
           <Route path="/tags" element={<FacetPage facet="tags" title="标签" emptyHint="按内容自动标记，点击标签查看对应文件。" />} />
@@ -116,6 +121,7 @@ export default function App() {
           <Route path="/faces" element={<PersonsPage />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/upload" element={<Upload />} />
+          <Route path="/plugins" element={<Plugins />} />
           <Route path="/asset/:id" element={<AssetDetail />} />
         </Routes>
       </main>

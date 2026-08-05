@@ -113,6 +113,34 @@ export interface PersonDTO {
   updated_at: number;
 }
 
+export interface PluginDTO {
+  id: string;
+  name: string;
+  version: string;
+  supported_media: string[];
+  depends_on: string[];
+  enabled: boolean;
+  params: Record<string, unknown>;
+}
+
+export interface SearchHitDTO {
+  asset_id: number;
+  media_type: string;
+  duration_sec: number | null;
+  score: number;
+  rank: number;
+  scope: string;
+  t_start: number | null;
+  t_end: number | null;
+  can_seek: boolean;
+}
+
+export interface SearchResponse {
+  query: string;
+  total: number;
+  items: SearchHitDTO[];
+}
+
 export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
   assets: (cursor?: number, mediaType?: string, facets?: Record<string, string>) =>
@@ -145,6 +173,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ keep_id: keepId, remove_id: removeId }),
     }),
+  plugins: () => request<{ items: PluginDTO[] }>("/plugins"),
+  setPluginEnabled: (id: string, enabled: boolean) =>
+    request<PluginDTO>(`/plugins/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+  search: (q: string, limit = 40) =>
+    request<SearchResponse>(`/search?${new URLSearchParams({ q, limit: String(limit) })}`),
 };
 
 export function mediaLabel(t: string): string {

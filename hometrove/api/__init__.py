@@ -14,7 +14,7 @@ from hometrove.db import engine, session_scope
 import hometrove.plugins.builtin  # noqa: F401  registers basic.info + mock plugins
 from hometrove.plugins.registry import REGISTRY
 from hometrove.uploads import UploadManager, build_router as build_uploads_router
-from hometrove.api.routes import assets, facets, folders, jobs, health, persons
+from hometrove.api.routes import assets, facets, folders, jobs, health, persons, plugins, search
 from hometrove.models import PluginConfig
 
 
@@ -31,12 +31,10 @@ def _web_dist_dir() -> Path | None:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.resolved_data_dir()
+    # ``engine()`` bootstraps the schema (and sqlite-vec tables) exactly once
+    # under a lock — the worker thread and the API server share that path, so
+    # no separate create_all() here (it would race the worker's).
     engine()
-
-    # Bootstrap schema if empty. Idempotent.
-    from hometrove.db import Base
-    from hometrove import models  # noqa: F401  ensure models registered
-    Base.metadata.create_all(engine())
 
     with session_scope() as s:
         for p in REGISTRY.list():
@@ -71,6 +69,8 @@ def create_app() -> FastAPI:
     app.include_router(persons.router)
     app.include_router(folders.router)
     app.include_router(jobs.router)
+    app.include_router(plugins.router)
+    app.include_router(search.router)
 
     dist = _web_dist_dir()
     if dist is not None:
