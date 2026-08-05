@@ -121,6 +121,7 @@ export interface PluginDTO {
   depends_on: string[];
   enabled: boolean;
   params: Record<string, unknown>;
+  params_schema: Record<string, unknown>;
 }
 
 export interface SearchHitDTO {
@@ -203,6 +204,16 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+  setPluginParams: (id: string, enabled: boolean, params: Record<string, unknown>) =>
+    request<PluginDTO>(`/plugins/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled, params }),
+    }),
+  rerunPlugin: (id: string) =>
+    request<{ ok: boolean; dropped: number; enqueued: number }>(
+      `/plugins/${encodeURIComponent(id)}/rerun`,
+      { method: "POST" },
+    ),
   search: (q: string, limit = 40) =>
     request<SearchResponse>(`/search?${new URLSearchParams({ q, limit: String(limit) })}`),
   albums: () => request<{ items: AlbumDTO[] }>("/albums"),
