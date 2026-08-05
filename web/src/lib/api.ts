@@ -141,6 +141,30 @@ export interface SearchResponse {
   items: SearchHitDTO[];
 }
 
+export interface AlbumDTO {
+  id: number;
+  name: string;
+  description: string;
+  cover_asset_id: number | null;
+  asset_count: number;
+  asset_ids: number[];
+  created_at: number;
+  updated_at: number;
+}
+
+export interface PlaceCluster {
+  grid: [number, number];
+  lat: number;
+  lon: number;
+  count: number;
+  asset_ids: number[];
+}
+
+export interface PlacesResponse {
+  items: PlaceCluster[];
+  grid: number;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
   assets: (cursor?: number, mediaType?: string, facets?: Record<string, string>) =>
@@ -181,6 +205,28 @@ export const api = {
     }),
   search: (q: string, limit = 40) =>
     request<SearchResponse>(`/search?${new URLSearchParams({ q, limit: String(limit) })}`),
+  albums: () => request<{ items: AlbumDTO[] }>("/albums"),
+  createAlbum: (name: string, description = "", assetIds: number[] = []) =>
+    request<AlbumDTO>("/albums", {
+      method: "POST",
+      body: JSON.stringify({ name, description, asset_ids: assetIds }),
+    }),
+  album: (id: number) => request<AlbumDTO>(`/albums/${id}`),
+  updateAlbum: (id: number, body: Record<string, unknown>) =>
+    request<AlbumDTO>(`/albums/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  addToAlbum: (id: number, assetIds: number[]) =>
+    request<{ ok: boolean; added: number; album: AlbumDTO }>(`/albums/${id}/assets`, {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds }),
+    }),
+  removeFromAlbum: (id: number, assetIds: number[]) =>
+    request<{ ok: boolean; removed: number; album: AlbumDTO }>(`/albums/${id}/assets`, {
+      method: "DELETE",
+      body: JSON.stringify({ asset_ids: assetIds }),
+    }),
+  deleteAlbum: (id: number) =>
+    request<{ ok: boolean }>(`/albums/${id}`, { method: "DELETE" }),
+  places: () => request<PlacesResponse>("/places"),
 };
 
 export function mediaLabel(t: string): string {
