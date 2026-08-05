@@ -159,12 +159,14 @@ def enqueue_basic_info(session: Session) -> int:
 
 
 def enqueue_pending(session: Session, plugin_ids: list[str] | None = None) -> int:
-    """Enqueue every registered plugin for assets missing a successful result.
+    """Enqueue every *enabled* plugin for assets missing a successful result.
 
     Idempotent per (asset, plugin): a plugin whose result already exists with
     status ``ok`` is skipped, and a live (pending/running) job is not
-    duplicated.
+    duplicated. Plugins disabled via ``plugin_config.enabled=0`` are skipped
+    entirely — their jobs are neither created nor requeued here.
     """
+    from hometrove.models import PluginConfig
     from hometrove.plugins.api import AssetLike
     from hometrove.plugins.registry import REGISTRY
 
@@ -172,6 +174,16 @@ def enqueue_pending(session: Session, plugin_ids: list[str] | None = None) -> in
         plugins = REGISTRY.list()
     else:
         plugins = [REGISTRY.get(pid) for pid in plugin_ids]
+
+    # Absence from plugin_config means "enabled by default" (the lifespan /
+    # bootstrap seed rows on startup). Only plugins explicitly disabled
+    # (enabled=0) are filtered out.
+    disabled_ids = set(
+        session.scalars(
+            select(PluginConfig.plugin_id).where(PluginConfig.enabled == 0)
+        ).all()
+    )
+    plugins = [p for p in plugins if p.id not in disabled_ids]
 
     now = int(time.time())
     enqueued = 0

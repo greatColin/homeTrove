@@ -41,6 +41,15 @@ class BasePlugin:
     def estimate(self, asset: AssetLike) -> Cost:  # noqa: ARG002
         return Cost(seconds=0.0, device="cpu")
 
+    def shutdown(self) -> None:
+        """Release any process-level resources held by this plugin.
+
+        Called when the plugin is disabled through the settings API. Default
+        is a no-op; plugins that cache heavy artifacts across calls (models,
+        pools) should free them here. Only in-memory resources are released —
+        on-disk artifacts (thumbs, results) are intentionally kept.
+        """
+
     def run(self, asset: AssetLike, ctx: PluginContext) -> dict[str, Any]:
         raise NotImplementedError
 

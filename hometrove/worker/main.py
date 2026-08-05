@@ -39,14 +39,29 @@ def _build_dag():
 
 
 def _claim_next(session, my_claim_token: str) -> Job | None:
-    """Atomically pick the oldest ``pending`` job whose DAG dependencies are
-    satisfied (the job's plugin has a ``done`` result for that asset), and mark
-    it ``running``."""
+    """Atomically pick the oldest ``pending`` job whose plugin is enabled and
+    whose DAG dependencies are satisfied (the job's plugin has a ``done``
+    result for that asset), and mark it ``running``."""
+    from hometrove.models import PluginConfig
+
     plugins = {p.id: p for p in REGISTRY.list()}
+    # Absence from plugin_config means "enabled by default" (the lifespan /
+    # bootstrap seeds rows on startup). Only explicitly disabled plugins
+    # (enabled=0) are parked.
+    disabled_ids = set(
+        session.scalars(
+            select(PluginConfig.plugin_id).where(PluginConfig.enabled == 0)
+        ).all()
+    )
     jobs = session.execute(
         select(Job).where(Job.state == "pending").order_by(Job.enqueued_at)
     ).scalars().all()
     for j in jobs:
+        if j.plugin_id in disabled_ids:
+            # Disabled plugins' jobs are left parked (not deleted); they
+            # resume when the plugin is re-enabled. Skipping keeps the
+            # worker from burning CPU on them.
+            continue
         plugin = plugins.get(j.plugin_id)
         deps = plugin.depends_on if plugin is not None else []
         ready = True

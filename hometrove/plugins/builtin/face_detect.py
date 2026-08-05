@@ -61,6 +61,13 @@ def _get_app() -> Optional[Any]:
     return _APP
 
 
+def _release_app() -> None:
+    """Free the shared FaceAnalysis instance (models + their memory)."""
+    global _APP
+    with _APP_LOCK:
+        _APP = None
+
+
 def _resolve_src(asset: AssetLike) -> Optional[Any]:
     return resolve_asset_path(asset)
 
@@ -86,6 +93,12 @@ class FaceDetectPlugin(BasePlugin):
         if asset.media_type == MediaType.VIDEO.value:
             return Cost(seconds=3.0, device="cpu")
         return Cost(seconds=0.5, device="cpu")
+
+    def shutdown(self) -> None:
+        # FaceAnalysis pins several onnxruntime sessions (~hundreds of MB).
+        # Disabling the plugin should drop that memory; the model pack on
+        # disk stays and is re-loaded lazily if the plugin is re-enabled.
+        _release_app()
 
     def run(self, asset: AssetLike, ctx: PluginContext) -> dict[str, Any]:
         params: FaceDetectPlugin.ParamsModel = ctx.params  # type: ignore[assignment]
