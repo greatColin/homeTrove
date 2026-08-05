@@ -43,6 +43,9 @@ class SceneDetectPlugin(BasePlugin):
     def run(self, asset: AssetLike, ctx: PluginContext) -> dict[str, Any]:
         params: SceneDetectPlugin.ParamsModel = ctx.params  # type: ignore[assignment]
 
+        if asset.media_type != MediaType.VIDEO.value:
+            return {"status": "skipped", "reason": "not a video asset"}
+
         src = resolve_asset_path(asset)
         if src is None:
             return {"status": "skipped", "reason": "source file missing"}

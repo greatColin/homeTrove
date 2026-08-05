@@ -139,6 +139,42 @@ class FaceEmbedding(Base):
     )
 
 
+class Embedding(Base):
+    """A semantic vector for an asset, produced by an embedding plugin.
+
+    ``scope`` distinguishes what the vector describes:
+
+    * ``image``  — the whole photo / the full video's cover frame
+    * ``scene``  — one video scene (``t_start``/``t_end`` in seconds)
+    * ``caption``— a natural-language description (M1-5 VLM output, later)
+
+    The vector itself lives both in ``embedding_json`` (source of truth) and
+    in the ``embedding_vec`` sqlite-vec virtual table (search index), whose
+    ``rowid`` mirrors this table's primary key.
+    """
+
+    __tablename__ = "embeddings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False,
+    )
+    plugin_id: Mapped[str] = mapped_column(Text, nullable=False)
+    plugin_version: Mapped[str] = mapped_column(Text, nullable=False, default="0.0.0")
+    scope: Mapped[str] = mapped_column(Text, nullable=False, default="image")
+    t_start: Mapped[Optional[float]] = mapped_column(Float)
+    t_end: Mapped[Optional[float]] = mapped_column(Float)
+    embedding_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+    asset: Mapped[Asset] = relationship()
+
+    __table_args__ = (
+        Index("idx_embeddings_asset_scope", "asset_id", "scope"),
+        Index("idx_embeddings_asset_plugin", "asset_id", "plugin_id"),
+    )
+
+
 class PluginConfig(Base):
     __tablename__ = "plugin_config"
 

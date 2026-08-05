@@ -7,6 +7,7 @@ export const PLUGIN_LABELS: Record<string, string> = {
   "basic.scene_detect": "场景切分",
   "face.detect": "人脸检测",
   "face.match": "人脸归组",
+  "embedding.jina_clip": "语义向量",
   "mock.tags": "标签（模拟）",
   "mock.category": "分类（模拟）",
   "mock.faces": "人脸（模拟）",
