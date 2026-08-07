@@ -101,17 +101,17 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 | 阶段 | 主题 | 状态 |
 |---|---|---|
-| **M0** | 基础框架：扫描 → 入库 → 浏览/上传闭环 | ✅ 完成（2026-08-04），13/14 项 |
+| **M0** | 基础框架：扫描 → 入库 → 浏览/上传闭环 | ✅ 完成（2026-08-04），14/14 项 |
 | **M1** | 插件扩展：真实内容识别 + 检索 + 分类页 + 插件管理 | ⏳ 进行中 |
-| **v1 必备** | M1 完成后的产品收尾 | ⬜ 未开始 |
+| **v1 必备** | M1 完成后的产品收尾 | 🚧 进行中：地点地图 ✅ |
 | **v1.1** | 多用户 / 共享 / ASR / 移动端等 | ⬜ 未开始 |
 | **v2** | 远期能力 | ⬜ 未开始 |
 
-### M0 基础框架（✅ 已完成，2026-08-04）
+### M0 基础框架（✅ 已完成，2026-08-04，补完 M0-3 后 14/14）
 
 - [x] M0-1 仓库骨架（`hometrove/` + `web/` + `pyproject.toml`）
 - [x] M0-2 SQLite(WAL) + SQLAlchemy 2.0 + Alembic（`assets/plugin_results/jobs/plugin_config`）
-- [ ] M0-3 媒体根只读校验 —— 推迟至 M1
+- [x] M0-3 媒体根只读校验 —— **`hometrove/readonly.py`** 启动时为每个 `media_roots_paths` 写 1 字节 sentinel 后立即 unlink；可写 → `WARNING` + 「remount -o ro」提示；只读 → `INFO`；缺失路径 / 非目录 / `os.access(W_OK)=false` 结构化 skip 不抛错；root 用户场景特殊处理（`chmod + 0o600` 检查 DAC 是否被旁路，旁路则提示「remount -o ro」）；`HOMETROVE_READ_ONLY_CHECK=warn|off`（默认 `warn`）；`create_app` lifespan / `hometrove scan` CLI / `hometrove worker` 三处启动路径接入；9 个新测试覆盖可写、只读、root DAC 旁路、缺失路径、非目录、`off` 豁免、`run_for_settings` 警告、lifespan 集成，79 测试全绿
 - [x] M0-4 扫描器：初始全量 + 轮询增量 + `content_hash` 去重
 - [x] M0-5 `basic.info` 插件（name/media_type/size/mtime/hash + 尽力读宽高/时长/拍摄时间）
 - [x] M0-6 Worker + DAG 拓扑调度（`depends_on`）
@@ -137,19 +137,79 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 - [x] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒；**当前 mock 向量阶段**）
 - [x] M1-8 `/albums` `/tags` `/places` 分类页（`/api/albums` CRUD + 资产添加/移除、`/api/places` exif GPS 网格聚类；前端 `/albums` `/places` 页；`/tags` `/categories` 模拟页、`/people` 已实现）
 - [x] M1-9 `/settings/plugins` 插件管理（**完整**：开关 + `params` 参数表单（按 `params_schema` 自动渲染、保存时 `ParamsModel` 校验）+ 版本展示 + 定向重跑 `POST /api/plugins/{id}/rerun`；禁用插件不入队/停驻、重启用恢复、禁用时 `shutdown()` 释放内存）
-- [ ] M1-10 `asr.faster_whisper` 语音转写（asr 本身待开发）；**上传插件预设**（`plugin_presets` 表含内置默认/会议/旅游+用户自定义 CRUD；`/api/upload-presets` GET/POST/DELETE；上传页选预设 → 插件 checkbox 列表回填 → 手动调整 → `POST /api/uploads/{id}/ingest?plugin_ids=` 入队；57 测试全绿）
-- [ ] M1-11 鉴权骨架（默认放行，为多用户预留）
+- [x] M1-10 `asr.faster_whisper` 语音转写（PyAV 抽音频 → 16 kHz mono PCM → 双后端 `auto|mock|faster_whisper`，默认 mock 写 `asr_transcripts` 表保持数据通路，装上 `faster-whisper` 自动切真模型）；**上传插件预设**（`plugin_presets` 表含内置默认/会议/旅游+用户自定义 CRUD；`/api/upload-presets` GET/POST/DELETE；上传页选预设 → 插件 checkbox 列表回填 → 手动调整 → `POST /api/uploads/{id}/ingest?plugin_ids=` 入队；alembic 0003 新增 `asr_transcripts` 表；`/api/assets/{id}` 暴露 `transcripts[]`；`/api/search` 关键词路径支持 audio 召回 + `scope:audio` 限定；9 个新测试覆盖 mock 产出/写入/幂等/跳过/real unavailable/详情页/搜索召回/scope 过滤/置信度阈值，70 测试全绿）
+- [x] M1-11 鉴权骨架（`AuthBackend` 协议 + `Principal` dataclass + `PassthroughAuthBackend` 默认实现 + `AuthMiddleware` + FastAPI 依赖项 `current_principal/require_auth/require_scope`；`HOMETROVE_AUTH_BACKEND=passthrough|session|token|oidc` 切换；`app.state.auth_backend` 作为测试 seam；4 个新测试覆盖默认放行/可替换/工厂回退/principal 暴露，61 测试全绿；为多用户预留但不引入 user 表/列）
 
 ### v1 必备（M0/M1 已覆盖的项）
 
-- 已覆盖：时间轴基础版、文件夹视图、灯箱、标签页（自动标签待 M1-5）、人物核心（命名/合并/过滤）、索引扫描、索引进度可视化、失败重试、健康检查、单用户
-- 待补齐（M1 完成后）：justified 网格、虚拟滚动、批量操作、收藏、回收站、相册、共享相册、智能相册、地点地图、高级筛选、语义搜索、以图搜图、场景切分、关键帧、静音预览、跳秒播放、插件管理
+- 已覆盖：时间轴基础版、文件夹视图、灯箱、标签页（自动标签待 M1-5）、人物核心（命名/合并/过滤）、索引扫描、索引进度可视化、失败重试、健康检查、单用户、相册、语义搜索（mock 向量）、场景切分、插件管理、鉴权骨架、ASR 字幕（默认 mock，装 `faster-whisper` 自动切真模型）、**回收站**、**批量操作**、**收藏**、**共享相册**、**justified 网格 + 虚拟滚动**、**智能相册**、**地点地图**
+- 待补齐（M1 完成后）：高级筛选、以图搜图、关键帧、静音预览、跳秒播放
+
+### v1 回收站（✅ 已完成，2026-08-07）
+
+- `assets.deleted_at` 列 + alembic `0004_asset_trash` + `idx_assets_deleted_at`
+- `POST /api/assets/{id}/trash` 软删；`POST /api/assets/{id}/restore` 还原；幂等
+- `GET /api/trash?limit&offset` 列表（按 `deleted_at DESC`，含 `total`）
+- `POST /api/trash/empty?older_than_seconds=` 永久清空（行级；不删磁盘文件）
+- `/api/assets`、`/api/assets/{id}`、`/api/assets/{id}/file` 与 `/thumbnail`、`/api/folders`、`/api/folders/assets`、`/api/places`、`/api/search` 默认隐藏 `deleted_at IS NOT NULL`；`/api/assets` 与 `/api/assets/{id}` 接受 `include_trashed=true` 旁路
+- 设置 `HOMETROVE_TRASH_RETENTION_DAYS=30`（默认）、`HOMETROVE_TRASH_AUTO_PURGE=false`（默认；`true` 后 worker 每 ~30s 自动调 `purge_expired`）
+- CLI：`hometrove trash prune [--older-than-days N] [--dry-run]`、`hometrove trash empty`
+- 前端 `/trash` 页 + 资源详情页「移到回收站 / 从回收站还原」按钮 + 侧边栏入口
+- 12 个新测试覆盖：默认隐藏、详情 404、`include_trashed=true` 旁路、还原 roundtrip、幂等时间戳、未知名 404、列表分页 + 排序、`empty` 留文件不删、`older_than_seconds` 截止、设置驱动的 `purge_expired`、搜索不复活、文件夹/地点过滤、CLI dry-run/empty
+- 总计：91 测试全绿（79 原 + 12 新）
+
+### v1 批量操作 + 收藏（✅ 已完成，2026-08-07）
+
+- `assets.favorite` 列（int 0/1，默认 0）+ alembic `0005_favorites` + `idx_assets_favorite`
+- 收藏（单资产）：`POST /api/assets/{id}/favorite`（toggle）、`PUT`（显式收藏）、`DELETE`（取消）；未知 ID 一律 404
+- Asset DTO 暴露 `favorite: bool`；`GET /api/assets?favorite=true|false` 按收藏状态过滤
+- 批量端点统一收 `{"asset_ids": [...]}`，返回 `{ok, requested, affected, missing}`；`asset_ids` 上限 `_BULK_MAX=1000` 超限 400
+  - `POST /api/bulk/assets/trash` / `restore` / `favorite` / `unfavorite` / `add-to-album`（body 加 `album_id`；追加到相册、保留成员顺序、已在相册跳过）
+  - 路由用 `/api/bulk/assets/*`：`/api/assets/bulk/*` 会被 `/api/assets/{asset_id}/trash` 路径参数路由抢占（`bulk` 被当 `asset_id` 解析）
+- 前端：时间轴「选择」模式 + 缩略图 hover ★ 收藏 + ★ 收藏/未收藏筛选；底部浮层 action bar（收藏 / 取消收藏 / 添加到相册… / 移到回收站）；资源详情页收藏切换；回收站页「选择」模式 + 批量还原
+- `web/src/components/bulk_actions.tsx`：`useSelection` hook + `BulkBar`（context=`library|trash`），动作完成 invalidate `assets/trash/asset/albums/search/folders/places`，toast 显示 `affected`/`missing` 部分失败
+- 11 个新测试：toggle/set/clear 幂等 + 404、DTO 暴露 + `?favorite` 过滤、批量 `affected`/`missing`/顺序、trash 幂等、add-to-album 顺序 + 去重、unknown album 404、`_BULK_MAX` 400、favorite 不影响 folders/places 计数
+- 总计：102 测试全绿（91 原 + 11 新）
+
+### v1 共享相册（✅ 已完成，2026-08-07）
+
+- 新增 `album_shares` 表：`album_id`, `token` (opaque unique), `allow_original`, `allow_download`, `expires_at`, `created_at`, `created_by`；alembic `0006_shared_albums`；`Album.shares` cascade delete
+- Token 设计：表存唯一 opaque token，URL 仅 `/share/{token}`。不采用 JWT-in-URL：更短、支持即时撤销、改权限不改链接
+- 管理端点：`POST|GET|DELETE /api/albums/{album_id}/shares`；创建时可设 `allow_original`/`allow_download`/`expires_at`
+- 公开端点（无鉴权）：`GET /api/public/albums/{token}`、`GET /api/public/thumbnails/{token}/{asset_id}/{size}`、`GET /api/public/files/{token}/{asset_id}`
+- 正确性：公开视图只返回相册内未软删除资产；`allow_original=false` 时原图 403；`allow_download=true` 时返回 `Content-Disposition: attachment`；过期/撤销 token 统一 404
+- 前端：相册详情页「分享」弹窗（权限开关 + 有效期 + 链接列表/复制/撤销）；新公开页 `/share/:token`（缩略图网格 + 只读灯箱 + 键盘导航 + 条件下载按钮）
+- 7 个新测试：创建/公开视图、撤销、软删除过滤、原图权限/下载头、非成员 404、过期阻塞、相册级联删除
+- 总计：109 测试全绿（102 原 + 7 新）
+
+### v1 justified 网格 + 虚拟滚动（✅ 已完成，2026-08-07）
+
+- 新增通用组件 `web/src/components/justified_grid.tsx`：`buildLayout()` 贪心装箱 + `JustifiedGrid` 虚拟滚动（`ResizeObserver` 测宽、`overscan=3`、仅挂载可视行）
+- 不引入新依赖，纯 React hooks + DOM API
+- `Timeline` / `AlbumDetail` / `SharedAlbum` 均接入；保留原有选择、收藏、预览、批量操作、hover 封面/移除按钮
+- 后端 API 无变化；`npm run build` 通过
+
+### v1 智能相册（✅ 已完成，2026-08-07）
+
+- `albums` 表新增 `is_smart` 标记，新增 `smart_album_rules` 表保存 JSON 规则
+- 规则 DSL：`and`/`or` 组合 + `person`/`place`/`tag`/`category`/`time`/`media_type`/`favorite` 叶子条件，最多嵌套 3 层
+- `/api/albums` 统一处理手动/智能相册；智能相册的 `asset_ids` 按规则实时计算，手动相册添加/移除/排序接口对智能相册返回 400
+- 共享相册 public 端点兼容智能相册
+- 前端相册列表显示「智能」badge，新建相册可切换智能模式，详情页可编辑规则
+- 新增 5 个测试；全量 114 测试通过；`npm run build` 通过
+
+### v1 地点地图（✅ 已完成，2026-08-07）
+
+- 新增依赖 `leaflet@1.9` + `react-leaflet@5`（React 19 兼容）+ `@types/leaflet`（dev）
+- `/places` 页改为 Leaflet + OpenStreetMap 交互式地图：缩放/平移、聚类 `CircleMarker`（半径随 `count`、选中高亮、`Tooltip` 常显数量）、`FitBounds` 自动适配、保留聚类 chip 列表与资产缩略图网格（联动选中）、错误态 + 重试、无 GPS 空态
+- 路由懒加载：Leaflet 独立 chunk（约 163KB）不进主包；后端 `/api/places` 无改动
+- 全量 114 测试通过；`npm run build` 通过
 
 ### v1.1 / v2
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：M1-10（上传插件预设）已完成并推送（57 测试全绿）；asr 本体待开发；M1-11 鉴权骨架待推进（或用户指定顺序）。M1-5 `vlm.qwen3vl` 另起任务并行开发。**
+**下一项：地点地图 ✅；剩余 v1 必备：高级筛选 / 以图搜图 / 关键帧 / 静音预览 / 跳秒播放。推荐下一项为「高级筛选」——在时间轴顶部过滤器区扩展出媒体类型 / 日期范围 / 人物 / 地点 / 标签 / 收藏状态等组合条件，后端 `/api/assets` 已支持 `media_type`、`favorite`、按日期过滤等参数，前端把现有时间轴筛选栏升级为可展开的组合筛选面板即可；能直接复用现有 `JustifiedGrid` 展示结果。**
 
 ---
 
