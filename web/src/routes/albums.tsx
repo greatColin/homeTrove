@@ -1,12 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { api, mediaLabel, thumbUrl, type AlbumDTO } from "../lib/api";
-
-function fmtDate(ts: number | null | undefined): string {
-  if (!ts) return "–";
-  return new Date(ts * 1000).toLocaleDateString("zh-CN");
-}
+import { api, mediaLabel, thumbUrl, type AlbumDTO, type AssetDTO, type ShareLinkDTO, type SmartAlbumRule } from "../lib/api";
+import { ShareModal } from "../components/share_modal";
+import { JustifiedGrid, type LayoutItem } from "../components/justified_grid";
 
 function AssetThumb({ assetId, video }: { assetId: number; video?: boolean }) {
   return (
@@ -24,23 +21,75 @@ function AssetThumb({ assetId, video }: { assetId: number; video?: boolean }) {
   );
 }
 
+function AlbumGridThumb({ item, onClick }: { item: LayoutItem; onClick: (a: AssetDTO) => void }) {
+  const isImage = item.asset.media_type === "image";
+  const style: React.CSSProperties = {
+    position: "absolute",
+    left: item.left,
+    top: item.top,
+    width: item.width,
+    height: item.height,
+  };
+  return (
+    <Link
+      to={`/asset/${item.asset.id}`}
+      style={style}
+      onClick={(e) => {
+        e.preventDefault();
+        onClick(item.asset);
+      }}
+      className="group relative overflow-hidden rounded-sm bg-neutral-200 dark:bg-neutral-800"
+    >
+      <img
+        src={thumbUrl(item.asset.id, isImage ? "small" : "placeholder")}
+        alt=""
+        loading="lazy"
+        className="h-full w-full object-cover"
+        onError={(e) => {
+          (e.currentTarget as HTMLImageElement).style.display = "none";
+        }}
+      />
+      {!isImage && (
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs font-medium text-white/90">
+          <span className="rounded bg-black/50 px-2 py-0.5">{mediaLabel(item.asset.media_type)}</span>
+        </span>
+      )}
+    </Link>
+  );
+}
+
 function CreateAlbumForm({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
+  const [isSmart, setIsSmart] = useState(false);
+  const [rule, setRule] = useState<SmartAlbumRule>({ op: "and", children: [] });
   const qc = useQueryClient();
-  const create = useMutation({
+
+  const createManual = useMutation({
     mutationFn: () => api.createAlbum(name, desc),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["albums"] });
       onDone();
     },
   });
+
+  const createSmart = useMutation({
+    mutationFn: () => api.createSmartAlbum(name, desc, rule),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["albums"] });
+      onDone();
+    },
+  });
+
+  const create = isSmart ? createSmart : createManual;
+  const canSubmit = name.trim() && (!isSmart || isValidSmartRule(rule));
+
   return (
     <form
-      className="mt-4 flex flex-col gap-2 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700"
+      className="mt-4 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700"
       onSubmit={(e) => {
         e.preventDefault();
-        if (name.trim()) create.mutate();
+        if (canSubmit) create.mutate();
       }}
     >
       <h3 className="font-medium">新建相册</h3>
@@ -56,10 +105,27 @@ function CreateAlbumForm({ onDone }: { onDone: () => void }) {
         placeholder="描述（可选）"
         className="rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-600 dark:bg-neutral-800"
       />
+
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={isSmart}
+          onChange={(e) => setIsSmart(e.target.checked)}
+        />
+        智能相册（按规则自动更新）
+      </label>
+
+      {isSmart && (
+        <div className="rounded border border-neutral-200 p-3 dark:border-neutral-700">
+          <p className="mb-2 text-sm font-medium">规则</p>
+          <RuleEditor rule={rule} onChange={setRule} />
+        </div>
+      )}
+
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={!name.trim() || create.isPending}
+          disabled={!canSubmit || create.isPending}
           className="rounded bg-brand-500 px-3 py-1 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
         >
           {create.isPending ? "创建中…" : "创建"}
@@ -97,6 +163,11 @@ function AlbumCard({ album }: { album: AlbumDTO }) {
         <span className="absolute right-2 top-2 rounded bg-black/50 px-1.5 py-0.5 text-xs text-white">
           {album.asset_count} 项
         </span>
+        {album.is_smart && (
+          <span className="absolute left-2 top-2 rounded bg-brand-500 px-1.5 py-0.5 text-xs text-white">
+            智能
+          </span>
+        )}
       </div>
       <div className="p-3">
         <p className="truncate font-medium">{album.name}</p>
@@ -185,6 +256,13 @@ function AlbumDetail() {
     mutationFn: () => api.deleteAlbum(albumId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["albums"] }),
   });
+  const updateRule = useMutation({
+    mutationFn: (rule: SmartAlbumRule) => api.updateSmartAlbumRule(albumId, rule),
+    onSuccess: invalidate,
+  });
+
+  const [showShare, setShowShare] = useState(false);
+  const [editingRule, setEditingRule] = useState(false);
 
   if (!Number.isFinite(albumId)) return <p className="p-6 text-neutral-500">无效相册 ID</p>;
   if (isLoading) return <p className="p-6 text-neutral-400">加载中…</p>;
@@ -202,6 +280,9 @@ function AlbumDetail() {
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold">{album.name}</h1>
+        {album.is_smart && (
+          <span className="rounded bg-brand-500 px-1.5 py-0.5 text-xs text-white">智能</span>
+        )}
         <span className="text-sm text-neutral-500">{album.asset_count} 项</span>
         <button
           onClick={() => del.mutate()}
@@ -213,13 +294,29 @@ function AlbumDetail() {
       {album.description && <p className="mt-1 text-sm text-neutral-500">{album.description}</p>}
 
       <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        {!album.is_smart && (
+          <button
+            onClick={() => setShowAdd((v) => !v)}
+            className="rounded bg-brand-500 px-3 py-1 font-medium text-white hover:bg-brand-600"
+          >
+            {showAdd ? "取消" : "添加照片"}
+          </button>
+        )}
+        {album.is_smart && (
+          <button
+            onClick={() => setEditingRule((v) => !v)}
+            className="rounded bg-brand-500 px-3 py-1 font-medium text-white hover:bg-brand-600"
+          >
+            {editingRule ? "取消" : "编辑规则"}
+          </button>
+        )}
         <button
-          onClick={() => setShowAdd((v) => !v)}
-          className="rounded bg-brand-500 px-3 py-1 font-medium text-white hover:bg-brand-600"
+          onClick={() => setShowShare(true)}
+          className="rounded border border-neutral-300 px-3 py-1 hover:bg-neutral-100 dark:border-neutral-600 dark:hover:bg-neutral-800"
         >
-          {showAdd ? "取消" : "添加照片"}
+          分享
         </button>
-        {rename.trim() && isRenaming && (
+        {isRenaming && (
           <button
             onClick={() => renameMut.mutate()}
             className="rounded border border-neutral-300 px-2 py-1 dark:border-neutral-600"
@@ -229,7 +326,24 @@ function AlbumDetail() {
         )}
       </div>
 
-      {showAdd && (
+      {editingRule && album.rule && (
+        <div className="mt-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+          <RuleEditor
+            rule={album.rule}
+            onChange={(rule) => {
+              if (isValidSmartRule(rule)) {
+                updateRule.mutate(rule);
+                setEditingRule(false);
+              }
+            }}
+          />
+          {updateRule.isError && (
+            <p className="mt-2 text-sm text-red-500">保存失败：{(updateRule.error as Error).message}</p>
+          )}
+        </div>
+      )}
+
+      {showAdd && !album.is_smart && (
         <div className="mt-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
           <div className="flex items-center justify-between">
             <p className="text-sm text-neutral-500">
@@ -278,7 +392,7 @@ function AlbumDetail() {
       <input
         value={rename}
         onChange={(e) => setRename(e.target.value)}
-        placeholder={rename ? "输入新名称后保存" : "重命名相册（回车保存）"}
+        placeholder="重命名相册（输入后保存）"
         onKeyDown={(e) => {
           if (e.key === "Enter" && isRenaming) renameMut.mutate();
         }}
@@ -286,37 +400,275 @@ function AlbumDetail() {
       />
 
       {album.asset_ids.length === 0 ? (
-        <p className="mt-6 text-sm text-neutral-500">空相册。点击「添加照片」开始整理。</p>
+        <p className="mt-6 text-sm text-neutral-500">空相册。</p>
       ) : (
-        <div className="mt-3 grid grid-cols-3 gap-1 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
-          {album.asset_ids.map((aid) => (
-            <div key={aid} className="group relative">
-              <Link to={`/asset/${aid}`}>
-                <AssetThumb assetId={aid} />
-              </Link>
-              <div className="absolute inset-0 hidden items-center justify-center gap-2 bg-black/40 group-hover:flex">
-                <button
-                  onClick={() => setCover.mutate(aid)}
-                  title="设为封面"
-                  className="rounded bg-white/90 px-1.5 py-0.5 text-xs text-black"
-                >
-                  封面
-                </button>
-                <button
-                  onClick={() => remove.mutate([aid])}
-                  title="移出相册"
-                  className="rounded bg-red-500/90 px-1.5 py-0.5 text-xs text-white"
-                >
-                  移除
-                </button>
-              </div>
+        <JustifiedGrid
+          assets={album.asset_ids.map((id) => ({ id } as AssetDTO))}
+          renderItem={(item) => (
+            <div
+              key={item.asset.id}
+              style={{
+                position: "absolute",
+                left: item.left,
+                top: item.top,
+                width: item.width,
+                height: item.height,
+              }}
+              className="group relative"
+            >
+              <AlbumGridThumb item={item} onClick={() => {}} />
+              {!album.is_smart && (
+                <div className="absolute inset-0 hidden items-center justify-center gap-2 bg-black/40 group-hover:flex">
+                  <button
+                    onClick={() => setCover.mutate(item.asset.id)}
+                    title="设为封面"
+                    className="rounded bg-white/90 px-1.5 py-0.5 text-xs text-black"
+                  >
+                    封面
+                  </button>
+                  <button
+                    onClick={() => remove.mutate([item.asset.id])}
+                    title="移出相册"
+                    className="rounded bg-red-500/90 px-1.5 py-0.5 text-xs text-white"
+                  >
+                    移除
+                  </button>
+                </div>
+              )}
             </div>
-          ))}
-        </div>
+          )}
+          className="mt-3 h-[60vh]"
+        />
       )}
       {remove.isError && <p className="mt-2 text-sm text-red-500">操作失败</p>}
+      {showShare && <ShareModal albumId={albumId} onClose={() => setShowShare(false)} />}
     </div>
   );
+}
+
+function RuleEditor({ rule, onChange }: { rule: SmartAlbumRule; onChange: (r: SmartAlbumRule) => void }) {
+  const { data: persons } = useQuery({ queryKey: ["persons"], queryFn: api.persons });
+  const { data: places } = useQuery({ queryKey: ["places"], queryFn: api.places });
+  const { data: facets } = useQuery({ queryKey: ["facets"], queryFn: api.facets });
+
+  if (rule.op === "and" || rule.op === "or") {
+    return (
+      <div className="space-y-2 rounded border border-neutral-200 p-2 dark:border-neutral-700">
+        <div className="flex items-center gap-2">
+          <select
+            value={rule.op}
+            onChange={(e) => onChange({ ...rule, op: e.target.value as "and" | "or" })}
+            className="rounded border border-neutral-300 px-1 py-0.5 text-sm dark:border-neutral-600 dark:bg-neutral-800"
+          >
+            <option value="and">全部满足</option>
+            <option value="or">任一满足</option>
+          </select>
+          <button
+            type="button"
+            onClick={() =>
+              onChange({
+                ...rule,
+                children: [...(rule.children ?? []), { op: "tag", value: "" }],
+              })
+            }
+            className="text-xs text-brand-500 hover:underline"
+          >
+            + 添加条件
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              onChange({
+                ...rule,
+                children: [...(rule.children ?? []), { op: "and", children: [] }],
+              })
+            }
+            className="text-xs text-brand-500 hover:underline"
+          >
+            + 添加条件组
+          </button>
+        </div>
+        {(rule.children ?? []).map((child, i) => (
+          <div key={i} className="flex items-start gap-2">
+            <div className="flex-1">
+              <RuleEditor
+                rule={child}
+                onChange={(newChild) => {
+                  const children = [...(rule.children ?? [])];
+                  children[i] = newChild;
+                  onChange({ ...rule, children });
+                }}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const children = [...(rule.children ?? [])];
+                children.splice(i, 1);
+                onChange({ ...rule, children });
+              }}
+              className="text-xs text-red-500 hover:underline"
+            >
+              删除
+            </button>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const updateField = (patch: Partial<SmartAlbumRule>) => onChange({ ...rule, ...patch });
+
+  switch (rule.op) {
+    case "person":
+      return (
+        <div className="flex items-center gap-2 text-sm">
+          <span>人物</span>
+          <select
+            value={rule.person_id ?? ""}
+            onChange={(e) => updateField({ person_id: e.target.value ? Number(e.target.value) : undefined })}
+            className="rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-600 dark:bg-neutral-800"
+          >
+            <option value="">选择人物</option>
+            {(persons?.items ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      );
+    case "place":
+      return (
+        <div className="flex items-center gap-2 text-sm">
+          <span>地点</span>
+          <select
+            value={rule.place_id ?? ""}
+            onChange={(e) => updateField({ place_id: e.target.value || undefined })}
+            className="rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-600 dark:bg-neutral-800"
+          >
+            <option value="">选择地点</option>
+            {(places?.items ?? []).map((p) => (
+              <option key={`${p.lat},${p.lon}`} value={`${p.lat},${p.lon}`}>
+                {p.lat.toFixed(2)},{p.lon.toFixed(2)} ({p.count})
+              </option>
+            ))}
+          </select>
+        </div>
+      );
+    case "tag":
+      return (
+        <div className="flex items-center gap-2 text-sm">
+          <span>标签</span>
+          <select
+            value={typeof rule.value === "string" ? rule.value : ""}
+            onChange={(e) => updateField({ value: e.target.value })}
+            className="rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-600 dark:bg-neutral-800"
+          >
+            <option value="">选择标签</option>
+            {Object.keys(facets?.tags ?? {}).map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
+      );
+    case "category":
+      return (
+        <div className="flex items-center gap-2 text-sm">
+          <span>分类</span>
+          <select
+            value={typeof rule.value === "string" ? rule.value : ""}
+            onChange={(e) => updateField({ value: e.target.value })}
+            className="rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-600 dark:bg-neutral-800"
+          >
+            <option value="">选择分类</option>
+            {Object.keys(facets?.categories ?? {}).map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
+      );
+    case "media_type":
+      return (
+        <div className="flex items-center gap-2 text-sm">
+          <span>类型</span>
+          <select
+            value={typeof rule.value === "string" ? rule.value : "image"}
+            onChange={(e) => updateField({ value: e.target.value })}
+            className="rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-600 dark:bg-neutral-800"
+          >
+            <option value="image">图片</option>
+            <option value="video">视频</option>
+            <option value="other">其他</option>
+          </select>
+        </div>
+      );
+    case "favorite":
+      return (
+        <div className="flex items-center gap-2 text-sm">
+          <span>收藏</span>
+          <select
+            value={rule.value === true ? "true" : "false"}
+            onChange={(e) => updateField({ value: e.target.value === "true" })}
+            className="rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-600 dark:bg-neutral-800"
+          >
+            <option value="true">已收藏</option>
+            <option value="false">未收藏</option>
+          </select>
+        </div>
+      );
+    case "time":
+      return (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span>时间</span>
+          <input
+            type="datetime-local"
+            value={epochToLocalInput(rule.after) ?? ""}
+            onChange={(e) => updateField({ after: localInputToEpoch(e.target.value) })}
+            className="rounded border border-neutral-300 px-1 py-0.5 text-sm dark:border-neutral-600 dark:bg-neutral-800"
+          />
+          <span>至</span>
+          <input
+            type="datetime-local"
+            value={epochToLocalInput(rule.before) ?? ""}
+            onChange={(e) => updateField({ before: localInputToEpoch(e.target.value) })}
+            className="rounded border border-neutral-300 px-1 py-0.5 text-sm dark:border-neutral-600 dark:bg-neutral-800"
+          />
+        </div>
+      );
+    default:
+      return null;
+  }
+}
+
+function isValidSmartRule(rule: SmartAlbumRule): boolean {
+  if (rule.op === "and" || rule.op === "or") {
+    return (rule.children ?? []).length > 0 && (rule.children ?? []).every(isValidSmartRule);
+  }
+  if (rule.op === "person") return rule.person_id != null;
+  if (rule.op === "place") return rule.place_id != null && rule.place_id !== "";
+  if (rule.op === "tag" || rule.op === "category" || rule.op === "media_type") {
+    return typeof rule.value === "string" && rule.value !== "";
+  }
+  if (rule.op === "favorite") return typeof rule.value === "boolean";
+  if (rule.op === "time") return rule.after != null || rule.before != null;
+  return false;
+}
+
+function epochToLocalInput(epoch?: number): string | undefined {
+  if (epoch == null) return undefined;
+  const d = new Date(epoch * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function localInputToEpoch(value: string): number | undefined {
+  if (!value) return undefined;
+  return Math.floor(new Date(value).getTime() / 1000);
 }
 
 export default function Albums() {

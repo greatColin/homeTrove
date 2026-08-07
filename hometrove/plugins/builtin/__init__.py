@@ -5,6 +5,7 @@ not be added here without an RFC.
 """
 
 from hometrove.plugins.builtin.basic_info import BasicInfoPlugin
+from hometrove.plugins.builtin.asr_faster_whisper import AsrFasterWhisperPlugin
 from hometrove.plugins.builtin.embedding_clip import EmbeddingJinaClipPlugin
 from hometrove.plugins.builtin.exif import ExifPlugin
 from hometrove.plugins.builtin.face_detect import FaceDetectPlugin
@@ -12,6 +13,7 @@ from hometrove.plugins.builtin.scene_detect import SceneDetectPlugin
 from hometrove.plugins.builtin.thumbnail import ThumbnailPlugin
 
 __all__ = [
+    "AsrFasterWhisperPlugin",
     "BasicInfoPlugin",
     "EmbeddingJinaClipPlugin",
     "ExifPlugin",
@@ -23,6 +25,7 @@ __all__ = [
 
 def _register_builtins() -> None:
     from hometrove.plugins.registry import REGISTRY as _R
+    _R.register(AsrFasterWhisperPlugin())
     _R.register(BasicInfoPlugin())
     _R.register(EmbeddingJinaClipPlugin())
     _R.register(ExifPlugin())

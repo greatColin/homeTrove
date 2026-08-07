@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hometrove.db import get_db
-from hometrove.models import PluginResult
+from hometrove.models import Asset, PluginResult
 
 
 router = APIRouter(prefix="/api/places", tags=["places"])
@@ -34,14 +34,17 @@ def places(
     session: Session = Depends(get_db),
 ):
     rows = session.execute(
-        select(PluginResult).where(
+        select(PluginResult, Asset)
+        .join(Asset, Asset.id == PluginResult.asset_id)
+        .where(
             PluginResult.plugin_id == "exif",
             PluginResult.status == "ok",
+            Asset.deleted_at.is_(None),
         )
-    ).scalars().all()
+    ).all()
 
     clusters: dict[tuple[float, float], dict] = {}
-    for pr in rows:
+    for pr, _asset in rows:
         try:
             data = json.loads(pr.result_json or "{}")
         except json.JSONDecodeError:

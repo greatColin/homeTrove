@@ -147,10 +147,54 @@ export interface AlbumDTO {
   name: string;
   description: string;
   cover_asset_id: number | null;
+  is_smart: boolean;
   asset_count: number;
   asset_ids: number[];
+  rule: SmartAlbumRule | null;
   created_at: number;
   updated_at: number;
+}
+
+export type SmartAlbumOp =
+  | "and"
+  | "or"
+  | "person"
+  | "place"
+  | "tag"
+  | "category"
+  | "time"
+  | "media_type"
+  | "favorite";
+
+export interface SmartAlbumRule {
+  op: SmartAlbumOp;
+  children?: SmartAlbumRule[];
+  person_id?: number;
+  place_id?: string;
+  value?: string | boolean;
+  after?: number;
+  before?: number;
+}
+
+export interface SharedAlbumDTO {
+  id: number;
+  name: string;
+  description: string;
+  cover_asset_id: number | null;
+  allow_original: boolean;
+  allow_download: boolean;
+  expires_at: number | null;
+  created_at: number;
+  asset_ids: number[];
+}
+
+export interface ShareLinkDTO {
+  token: string;
+  allow_original: boolean;
+  allow_download: boolean;
+  expires_at: number | null;
+  created_at: number;
+  share_url: string;
 }
 
 export interface PlaceCluster {
@@ -230,9 +274,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, description, asset_ids: assetIds }),
     }),
+  createSmartAlbum: (name: string, description: string, rule: SmartAlbumRule) =>
+    request<AlbumDTO>("/albums", {
+      method: "POST",
+      body: JSON.stringify({ name, description, is_smart: true, rule }),
+    }),
   album: (id: number) => request<AlbumDTO>(`/albums/${id}`),
   updateAlbum: (id: number, body: Record<string, unknown>) =>
     request<AlbumDTO>(`/albums/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  updateSmartAlbumRule: (id: number, rule: SmartAlbumRule) =>
+    request<AlbumDTO>(`/albums/${id}`, { method: "PATCH", body: JSON.stringify({ rule }) }),
   addToAlbum: (id: number, assetIds: number[]) =>
     request<{ ok: boolean; added: number; album: AlbumDTO }>(`/albums/${id}/assets`, {
       method: "POST",
@@ -245,6 +296,17 @@ export const api = {
     }),
   deleteAlbum: (id: number) =>
     request<{ ok: boolean }>(`/albums/${id}`, { method: "DELETE" }),
+  createShare: (albumId: number, body: Record<string, unknown>) =>
+    request<ShareLinkDTO>(`/albums/${albumId}/shares`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listShares: (albumId: number) =>
+    request<{ items: ShareLinkDTO[] }>(`/albums/${albumId}/shares`),
+  deleteShare: (albumId: number, token: string) =>
+    request<{ ok: boolean }>(`/albums/${albumId}/shares/${token}`, { method: "DELETE" }),
+  publicAlbum: (token: string) =>
+    request<SharedAlbumDTO>(`/public/albums/${token}`),
   places: () => request<PlacesResponse>("/places"),
   uploadPresets: () => request<{ items: UploadPresetDTO[] }>("/upload-presets"),
   createUploadPreset: (name: string, pluginIds: string[]) =>
@@ -269,4 +331,12 @@ export function mediaLabel(t: string): string {
 
 export function thumbUrl(assetId: number, size: "small" | "medium" | "placeholder" = "small"): string {
   return `/api/assets/${assetId}/thumbnail?size=${size}`;
+}
+
+export function publicThumbUrl(token: string, assetId: number, size: "small" | "medium" | "placeholder" = "small"): string {
+  return `/api/public/thumbnails/${token}/${assetId}/${size}`;
+}
+
+export function publicFileUrl(token: string, assetId: number): string {
+  return `/api/public/files/${token}/${assetId}`;
 }

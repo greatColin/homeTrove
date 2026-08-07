@@ -1,5 +1,5 @@
 import { useParams, Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, mediaLabel } from "../lib/api";
 import { PluginDataBlock, PLUGIN_LABELS } from "../components/kv";
 
@@ -11,10 +11,40 @@ function fmtTs(ts: number | null | undefined): string {
 export default function AssetDetail() {
   const { id } = useParams();
   const assetId = Number(id);
+  const qc = useQueryClient();
+  // Always include trashed rows so a user can browse a trashed asset's
+  // detail from the Trash page; the ``deleted_at`` field on the response
+  // decides which action buttons to render.
   const { data: asset, isLoading, isError } = useQuery({
     queryKey: ["asset", assetId],
-    queryFn: () => api.asset(assetId),
+    queryFn: () => api.asset(assetId, true),
     enabled: Number.isFinite(assetId),
+  });
+
+  const moveToTrash = useMutation({
+    mutationFn: () => api.moveToTrash(assetId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["asset", assetId] });
+      await qc.invalidateQueries({ queryKey: ["trash"] });
+      await qc.invalidateQueries({ queryKey: ["assets"] });
+    },
+  });
+
+  const restore = useMutation({
+    mutationFn: () => api.restoreFromTrash(assetId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["asset", assetId] });
+      await qc.invalidateQueries({ queryKey: ["trash"] });
+      await qc.invalidateQueries({ queryKey: ["assets"] });
+    },
+  });
+
+  const toggleFavorite = useMutation({
+    mutationFn: () => api.toggleFavorite(assetId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["asset", assetId] });
+      await qc.invalidateQueries({ queryKey: ["assets"] });
+    },
   });
 
   if (!Number.isFinite(assetId)) {
@@ -29,11 +59,12 @@ export default function AssetDetail() {
 
   const fileName = asset.path.split("\0").pop() ?? asset.path;
   const pluginEntries = Object.entries(asset.plugin_results ?? {});
+  const isTrashed = asset.deleted_at != null;
 
   return (
     <div className="p-4 md:p-6">
-      <Link to="/timeline" className="text-sm text-brand-500 hover:underline">
-        ← 返回时间轴
+      <Link to={isTrashed ? "/trash" : "/timeline"} className="text-sm text-brand-500 hover:underline">
+        ← 返回{isTrashed ? "回收站" : "时间轴"}
       </Link>
 
       <div className="mt-3 flex flex-col gap-4 md:flex-row">
@@ -58,7 +89,14 @@ export default function AssetDetail() {
         </div>
 
         <div className="min-w-0 flex-1">
-          <h1 className="break-all text-lg font-semibold">{fileName}</h1>
+          <div className="flex flex-wrap items-baseline gap-3">
+            <h1 className="break-all text-lg font-semibold">{fileName}</h1>
+            {isTrashed && (
+              <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-500/20 dark:text-red-300">
+                回收站 · {fmtTs(asset.deleted_at)}
+              </span>
+            )}
+          </div>
           <p className="mt-1 text-sm text-neutral-500">
             {mediaLabel(asset.media_type)}
             {asset.size_bytes != null && ` · ${(asset.size_bytes / 1024).toFixed(0)} KB`}
@@ -69,6 +107,43 @@ export default function AssetDetail() {
               ? ` · ${asset.duration_sec.toFixed(1)}s`
               : ""}
           </p>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {isTrashed ? (
+              <button
+                onClick={() => restore.mutate()}
+                disabled={restore.isPending}
+                className="rounded-md bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              >
+                {restore.isPending ? "还原中…" : "从回收站还原"}
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => toggleFavorite.mutate()}
+                  disabled={toggleFavorite.isPending}
+                  className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-50 ${
+                    asset.favorite
+                      ? "border-yellow-400 bg-yellow-50 text-yellow-700 dark:bg-yellow-500/10 dark:text-yellow-300"
+                      : "border-neutral-300 text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                  }`}
+                >
+                  {asset.favorite ? "★ 已收藏" : "☆ 收藏"}
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm("移到回收站？文件本身不会被删除，30 天后该索引记录会自动清理。")) {
+                      moveToTrash.mutate();
+                    }
+                  }}
+                  disabled={moveToTrash.isPending}
+                  className="rounded-md border border-red-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-500/10"
+                >
+                  {moveToTrash.isPending ? "处理中…" : "移到回收站"}
+                </button>
+              </>
+            )}
+          </div>
 
           <div className="mt-6 grid gap-4">
             {pluginEntries.length === 0 && (

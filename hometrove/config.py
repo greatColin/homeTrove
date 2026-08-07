@@ -32,6 +32,25 @@ class Settings(BaseSettings):
     worker_concurrency: int = 2
     worker_poll_interval_seconds: float = 0.5
 
+    # M1-11: auth scaffold. v1 ships with a passthrough backend that always
+    # returns a single "local" principal; v1.1 will add session/token/oidc
+    # backends that flip ``require_auth`` dependencies to gate routes.
+    auth_backend: str = "passthrough"
+    auth_cookie_name: str = "hometrove_session"
+    auth_session_ttl_seconds: int = 7 * 24 * 3600
+
+    # M0-3: media-root read-only verification.
+    # ``warn`` (default) prints one WARNING per writable root at startup;
+    # ``off`` skips the probe entirely (dev / scratch mounts).
+    read_only_check: str = "warn"
+
+    # v1 trash (soft delete): ``deleted_at`` is set on trashing; assets are
+    # hidden from default views until restored or purged. Permanent purge
+    # is row-only — the on-disk file is never touched because M0 assumes
+    # scanned media roots are read-only mounts.
+    trash_retention_days: int = 30
+    trash_auto_purge: bool = False  # set True to enable worker-side sweep
+
     log_level: str = "INFO"
 
     def resolved_data_dir(self) -> Path:

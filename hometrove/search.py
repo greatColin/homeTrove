@@ -27,7 +27,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hometrove.models import Asset, Embedding, PluginResult
+from hometrove.models import Asset, AsrTranscript, Embedding, PluginResult
 from hometrove.plugins.api import MediaType
 from hometrove.vector import VECTOR_DIM, get_index
 
@@ -68,12 +68,12 @@ def _encode_query(query: str) -> list[float]:
 
 
 def _strip_scope(q: str) -> tuple[str, Optional[str]]:
-    """Parse an optional ``scope:scene|image`` prefix from the query."""
+    """Parse an optional ``scope:scene|image|audio`` prefix from the query."""
     for prefix in ("scope:", "scope="):
         if q.strip().startswith(prefix):
             rest = q.strip()[len(prefix):]
             head, _, tail = rest.partition(" ")
-            if head in ("scene", "image", "caption"):
+            if head in ("scene", "image", "caption", "audio"):
                 return tail.strip() or "", head
     return q.strip(), None
 
@@ -114,34 +114,67 @@ def _vector_recall(
     return hits
 
 
-def _keyword_recall(session: Session, q: str, limit: int = 40) -> list[tuple[SearchHit, int]]:
-    """LIKE matching over text-bearing plugin results -> SearchHit, rank."""
+def _keyword_recall(
+    session: Session,
+    q: str,
+    limit: int = 40,
+    scope: Optional[str] = None,
+) -> list[tuple[SearchHit, int]]:
+    """LIKE matching over text-bearing plugin results -> SearchHit, rank.
+
+    ``scope`` narrows the recall source: ``audio`` only matches transcript
+    rows; any other / unset scope returns both plugin results and
+    transcripts. This keeps ``scope:audio`` precise while leaving the
+    default hybrid path untouched.
+    """
     hits: list[tuple[SearchHit, int]] = []
-    for plugin_id in _KEYWORD_PLUGINS:
-        rows = session.execute(
-            select(PluginResult.asset_id)
-            .where(
-                PluginResult.plugin_id == plugin_id,
-                PluginResult.status == "ok",
-                PluginResult.result_json.ilike(f"%{q}%"),
-            )
-            .limit(limit)
-        ).scalars().all()
-        for rank, asset_id in enumerate(rows):
-            hits.append(
-                (
-                    SearchHit(
-                        asset_id=asset_id,
-                        embedding_id=None,
-                        scope="keyword",
-                        t_start=None,
-                        t_end=None,
-                        score=0.0,
-                        rank=rank + 1,
-                    ),
-                    rank + 1,
+    include_plugin_results = scope != "audio"
+    if include_plugin_results:
+        for plugin_id in _KEYWORD_PLUGINS:
+            rows = session.execute(
+                select(PluginResult.asset_id).where(
+                    PluginResult.plugin_id == plugin_id,
+                    PluginResult.status == "ok",
+                    PluginResult.result_json.ilike(f"%{q}%"),
                 )
+                .limit(limit)
+            ).scalars().all()
+            for rank, asset_id in enumerate(rows):
+                hits.append(
+                    (
+                        SearchHit(
+                            asset_id=asset_id,
+                            embedding_id=None,
+                            scope="keyword",
+                            t_start=None,
+                            t_end=None,
+                            score=0.0,
+                            rank=rank + 1,
+                        ),
+                        rank + 1,
+                    )
+                )
+
+    # ASR transcripts (M1-10): match the spoken text and expose ``t_start``
+    # so a video hit can jump to the cue that matched the query.
+    audio_rows = session.execute(
+        select(AsrTranscript).where(AsrTranscript.text.ilike(f"%{q}%"))
+    ).scalars().all()
+    for rank, row in enumerate(audio_rows):
+        hits.append(
+            (
+                SearchHit(
+                    asset_id=row.asset_id,
+                    embedding_id=None,
+                    scope="audio",
+                    t_start=row.t_start,
+                    t_end=row.t_end,
+                    score=0.0,
+                    rank=rank + 1,
+                ),
+                rank + 1,
             )
+        )
     return hits
 
 
@@ -177,16 +210,20 @@ def search(
 ) -> dict[str, Any]:
     """Run hybrid search and return results in the API shape."""
     q, scope = _strip_scope(query)
+    if scope not in (None, "image", "scene", "audio"):
+        # Unknown scope: degrade to a plain keyword search rather than 400.
+        scope = None
     if not q:
         return {"query": query, "total": 0, "items": []}
 
     candidates: list[list[tuple[SearchHit, int]]] = []
     candidates.append(_vector_recall(session, _encode_query(q), scope))
-    if scope in (None, "image", "scene"):
+    if scope in (None, "image", "scene", "audio"):
         # Keyword recall is scope-agnostic (matches tags / exif text); skip it
         # when the caller pinned a scene/image scope so text fields don't leak
-        # out-of-scope results.
-        candidates.append(_keyword_recall(session, q))
+        # out-of-scope results. ``audio`` is included so transcript hits can
+        # carry the matching ``t_start``.
+        candidates.append(_keyword_recall(session, q, scope=scope))
 
     fused = _rrf(candidates)
 
@@ -203,6 +240,10 @@ def search(
     for h in fused[:limit]:
         a = assets.get(h.asset_id)
         if a is None:
+            continue
+        # v1 trash: drop hits whose asset has been soft-deleted so the
+        # search results never resurrect a trashed item.
+        if a.deleted_at is not None:
             continue
         items.append(
             {

@@ -46,7 +46,9 @@ def list_folders(session: Session = Depends(get_db)):
     counts: dict[tuple[str, ...], int] = defaultdict(int)
     media_types: dict[tuple[str, ...], dict[str, int]] = defaultdict(lambda: {"image": 0, "video": 0, "other": 0})
 
-    rows = session.execute(select(Asset.media_root, Asset.media_type)).all()
+    rows = session.execute(
+        select(Asset.media_root, Asset.media_type).where(Asset.deleted_at.is_(None))
+    ).all()
     for root, media_type in rows:
         # Bucket: the entire media root counts as one folder for M0 simplicity.
         # Sub-folder navigation lands in M1.
@@ -72,7 +74,7 @@ def assets_in_folder(media_root: str, session: Session = Depends(get_db)):
     rows = (
         session.execute(
             select(Asset)
-            .where(Asset.media_root == media_root)
+            .where(Asset.media_root == media_root, Asset.deleted_at.is_(None))
             .order_by(Asset.id)
             .limit(1000)
         )

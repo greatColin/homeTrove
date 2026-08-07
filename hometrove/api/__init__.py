@@ -5,22 +5,25 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from hometrove.auth import Principal, build_auth_backend
 from hometrove.config import get_settings
 from hometrove.db import engine, session_scope
 import hometrove.plugins.builtin  # noqa: F401  registers basic.info + mock plugins
 from hometrove.plugins.registry import REGISTRY
 from hometrove.uploads import UploadManager, build_router as build_uploads_router
+from hometrove.api.deps import current_principal
+from hometrove.api.middleware import AuthMiddleware
 from hometrove.api.routes import (
     albums,
     assets,
     facets,
     folders,
-    jobs,
     health,
+    jobs,
     persons,
     places,
     plugins,
@@ -41,12 +44,20 @@ def _web_dist_dir() -> Path | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import logging
+
     settings = get_settings()
     settings.resolved_data_dir()
     # ``engine()`` bootstraps the schema (and sqlite-vec tables) exactly once
     # under a lock — the worker thread and the API server share that path, so
     # no separate create_all() here (it would race the worker's).
     engine()
+
+    # M0-3: warn when a configured media root is writable. The probe runs
+    # once per process at startup; opt out via HOMETROVE_READ_ONLY_CHECK=off.
+    from hometrove.readonly import run_for_settings
+
+    run_for_settings(settings, logger=logging.getLogger("hometrove.readonly"))
 
     with session_scope() as s:
         for p in REGISTRY.list():
@@ -72,6 +83,13 @@ def create_app() -> FastAPI:
         ttl_seconds=settings.upload_session_ttl_seconds,
     )
 
+    # M1-11 auth scaffold: register the middleware before any route so every
+    # request is resolved to a ``Principal`` (default = passthrough local).
+    # ``app.state.auth_backend`` is left open for tests to monkeypatch a
+    # counting/stub backend without rebuilding the app.
+    app.state.auth_backend = build_auth_backend(settings)
+    app.add_middleware(AuthMiddleware, backend=app.state.auth_backend)
+
     # Order matters: everything below must be registered before the SPA
     # catch-all ``/{full_path:path}`` route so API paths win.
     app.include_router(health.router)
@@ -86,6 +104,8 @@ def create_app() -> FastAPI:
     app.include_router(albums.router)
     app.include_router(places.router)
     app.include_router(upload_presets.router)
+    # Public share endpoints are registered last but before the SPA fallback.
+    # They live inside assets.router to keep the prefix surface consistent.
 
     dist = _web_dist_dir()
     if dist is not None:

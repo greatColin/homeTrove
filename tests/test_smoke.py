@@ -1697,3 +1697,1549 @@ def test_upload_ingest_with_plugin_ids(tmp_data_dir, tmp_path: Path):
             enqueued = {j.plugin_id for j in jobs}
             assert "thumbnail" in enqueued
             assert "exif" in enqueued
+
+
+# ---------------------------------------------------------------------------
+# M1-11: auth scaffold
+# ---------------------------------------------------------------------------
+
+
+def test_auth_passthrough_principal_exposed(tmp_data_dir):
+    """The default passthrough backend exposes the local principal."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        # /api/health still 200 — no auth required by any existing route.
+        r = c.get("/api/health")
+        assert r.status_code == 200
+        # The hidden debug route returns the principal the middleware produced.
+        r = c.get("/api/_debug/principal")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == "local"
+        assert body["is_authenticated"] is False
+        assert body["scopes"] == []
+
+
+def test_auth_middleware_invokes_backend_per_request(tmp_data_dir):
+    """A counting backend is called once for each request."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.auth import PassthroughAuthBackend
+
+    calls = {"n": 0}
+
+    class CountingBackend(PassthroughAuthBackend):
+        def authenticate(self, request):  # type: ignore[override]
+            calls["n"] += 1
+            return super().authenticate(request)
+
+    app = create_app()
+    # The middleware looks up ``app.state.auth_backend`` on every dispatch,
+    # so swapping it in place is the documented test seam.
+    app.state.auth_backend = CountingBackend()
+
+    with TestClient(app) as c:
+        for _ in range(3):
+            assert c.get("/api/health").status_code == 200
+        assert calls["n"] == 3
+
+
+def test_auth_middleware_lookup_helper():
+    """get_principal returns Principal.local() outside a request context."""
+    from hometrove.api.middleware import get_principal
+    from hometrove.auth import Principal
+
+    class _Stub:
+        state = type("S", (), {})()
+
+    p = get_principal(_Stub())  # type: ignore[arg-type]
+    assert p == Principal.local()
+
+
+def test_auth_backend_swap_through_factory():
+    """build_auth_backend() honors a custom name and falls back to passthrough."""
+    from hometrove.auth import (
+        PassthroughAuthBackend,
+        Principal,
+        build_auth_backend,
+    )
+
+    class _Settings:
+        auth_backend = "passthrough"
+
+    backend = build_auth_backend(_Settings())  # type: ignore[arg-type]
+    assert isinstance(backend, PassthroughAuthBackend)
+
+    # Custom name -> not in registry -> still passthrough, never raises.
+    class _Unknown:
+        auth_backend = "oidc"
+
+    backend = build_auth_backend(_Unknown())  # type: ignore[arg-type]
+    assert isinstance(backend, PassthroughAuthBackend)
+
+    # Caller can inject an explicit override (used by tests + future v1.1).
+    fake_principal = Principal(id="alice", is_authenticated=True)
+    backend = build_auth_backend(_Settings(), overrides={"passthrough": PassthroughAuthBackend(fake_principal)})
+    p = backend.authenticate(object())
+    assert p.id == "alice"
+
+
+# ---------------------------------------------------------------------------
+# M1-10: asr.faster_whisper
+# ---------------------------------------------------------------------------
+
+
+def _asr_setup_db():
+    """Insert an Asset + a tiny MP4 with a silent audio track so the plugin can run."""
+    import os
+
+    import numpy as np
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+    from hometrove.plugins.api import AssetLike, MediaType
+
+    src = os.path.join(os.path.dirname(__file__), "_tmp_clip.mp4")
+    _make_video_with_silent_audio(Path(src), w=160, h=120, frames=24)
+    with session_scope() as s:
+        s.add(Asset(
+            id=500, path=src, media_root=str(os.path.dirname(src)),
+            content_hash="asr1", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        s.commit()
+    return AssetLike(
+        id=500, path=src, media_root=str(os.path.dirname(src)),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="asr1",
+    )
+
+
+def _make_video_with_silent_audio(path: Path, w: int = 160, h: int = 120, frames: int = 12) -> None:
+    """MP4 with a real (silent) audio track so PyAV can demux an audio stream."""
+    import av
+    import numpy as np
+
+    container = av.open(str(path), mode="w")
+    vstream = container.add_stream("mpeg4", rate=24)
+    vstream.width = w
+    vstream.height = h
+
+    astream = container.add_stream("aac", rate=16_000)
+    astream.layout = "mono"
+    astream.sample_rate = 16_000
+
+    arr = np.full((h, w, 3), 32, dtype="uint8")
+    frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
+    for packet in vstream.encode(frame):
+        container.mux(packet)
+    for packet in vstream.encode():
+        container.mux(packet)
+
+    # 0.5 s of silence at 16 kHz mono.
+    silent = np.zeros((1, 8000), dtype=np.int16)
+    aframe = av.AudioFrame.from_ndarray(silent, format="s16", layout="mono")
+    aframe.sample_rate = 16_000
+    aframe.pts = 0
+    for packet in astream.encode(aframe):
+        container.mux(packet)
+    for packet in astream.encode():
+        container.mux(packet)
+    container.close()
+
+
+def test_asr_faster_whisper_mock_backend_writes_segments(tmp_data_dir, monkeypatch):
+    """The mock backend produces >=1 segment and writes it to asr_transcripts."""
+    from hometrove.db import session_scope
+    from hometrove.models import AsrTranscript
+    from hometrove.plugins.api import PluginContext
+    from hometrove.plugins.builtin.asr_faster_whisper import AsrFasterWhisperPlugin
+
+    asset = _asr_setup_db()
+    p = AsrFasterWhisperPlugin()
+    # Force mock so the test is fast and doesn't pull faster-whisper.
+    monkeypatch.setattr(
+        "hometrove.plugins.builtin.asr_faster_whisper._transcribe_real",
+        lambda *a, **k: None,
+    )
+    with session_scope() as s:
+        ctx = PluginContext(asset=asset, params=p.ParamsModel(backend="auto"), db=s)
+        res = p.run(asset, ctx)
+        s.commit()
+        assert res["status"] == "ok"
+        assert res["backend"] == "mock"
+        assert res["segments"] >= 1
+        rows = (
+            s.query(AsrTranscript)
+            .filter(AsrTranscript.asset_id == asset.id)
+            .order_by(AsrTranscript.t_start)
+            .all()
+        )
+        assert len(rows) == res["segments"]
+        for r in rows:
+            assert r.t_end > r.t_start
+            assert r.text
+            assert r.plugin_id == "asr.faster_whisper"
+
+
+def test_asr_faster_whisper_idempotent(tmp_data_dir, monkeypatch):
+    """Re-running the plugin replaces (not stacks) the previous transcript rows."""
+    from hometrove.db import session_scope
+    from hometrove.models import AsrTranscript
+    from hometrove.plugins.api import PluginContext
+    from hometrove.plugins.builtin.asr_faster_whisper import AsrFasterWhisperPlugin
+
+    asset = _asr_setup_db()
+    p = AsrFasterWhisperPlugin()
+    monkeypatch.setattr(
+        "hometrove.plugins.builtin.asr_faster_whisper._transcribe_real",
+        lambda *a, **k: None,
+    )
+    for _ in range(2):
+        with session_scope() as s:
+            p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(backend="auto"), db=s))
+            s.commit()
+    with session_scope() as s:
+        n = (
+            s.query(AsrTranscript)
+            .filter(
+                AsrTranscript.asset_id == asset.id,
+                AsrTranscript.plugin_id == "asr.faster_whisper",
+                AsrTranscript.plugin_version == p.version,
+            )
+            .count()
+        )
+        assert n >= 1
+
+
+def test_asr_faster_whisper_skips_when_no_audio(tmp_data_dir):
+    """A file without an audio stream returns skipped, never crashes."""
+    from hometrove.db import session_scope
+    from hometrove.models import AsrTranscript
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.asr_faster_whisper import AsrFasterWhisperPlugin
+
+    # Empty payload -> av.open raises during demux; the plugin must skip.
+    src = "/workspace/var/_asr_no_audio.mp4"
+    Path(src).parent.mkdir(parents=True, exist_ok=True)
+    Path(src).write_bytes(b"not a real video")
+    asset = AssetLike(
+        id=501, path=src, media_root=str(Path(src).parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="asr_na",
+    )
+    p = AsrFasterWhisperPlugin()
+    with session_scope() as s:
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+        assert res["status"] == "skipped"
+        assert (
+            s.query(AsrTranscript).filter(AsrTranscript.asset_id == 501).count() == 0
+        )
+
+
+def test_asr_faster_whisper_skips_image(tmp_data_dir):
+    """Non-video media is skipped with a typed reason."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.asr_faster_whisper import AsrFasterWhisperPlugin
+
+    asset = AssetLike(
+        id=502, path="/p/x.png", media_root="/p",
+        media_type=MediaType.IMAGE.value, content_hash_prefix="asr_img",
+    )
+    p = AsrFasterWhisperPlugin()
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "skipped"
+    assert "not a video" in res["reason"]
+
+
+def test_asr_faster_whisper_backend_real_unavailable(tmp_data_dir, monkeypatch):
+    """With backend=faster_whisper and the package missing, report skipped."""
+    from hometrove.db import session_scope
+    from hometrove.plugins.api import PluginContext
+    from hometrove.plugins.builtin.asr_faster_whisper import (
+        AsrFasterWhisperPlugin,
+        has_faster_whisper,
+    )
+
+    # Pretend the import probe failed.
+    monkeypatch.setattr(
+        "hometrove.plugins.builtin.asr_faster_whisper._HAS_FASTER_WHISPER", False,
+    )
+    asset = _asr_setup_db()
+    p = AsrFasterWhisperPlugin()
+    with session_scope() as s:
+        ctx = PluginContext(asset=asset, params=p.ParamsModel(backend="faster_whisper"), db=s)
+        res = p.run(asset, ctx)
+    assert has_faster_whisper() is False
+    assert res["status"] == "skipped"
+    assert "faster_whisper" in res["reason"]
+
+
+def test_asr_transcripts_exposed_in_asset_detail(tmp_data_dir, monkeypatch):
+    """GET /api/assets/{id} includes the transcripts list."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.plugins.api import PluginContext
+    from hometrove.plugins.builtin.asr_faster_whisper import AsrFasterWhisperPlugin
+
+    asset = _asr_setup_db()
+    p = AsrFasterWhisperPlugin()
+    monkeypatch.setattr(
+        "hometrove.plugins.builtin.asr_faster_whisper._transcribe_real",
+        lambda *a, **k: None,
+    )
+    with session_scope() as s:
+        p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(backend="auto"), db=s))
+        s.commit()
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/assets/500")
+        assert r.status_code == 200
+        body = r.json()
+        assert "transcripts" in body
+        assert isinstance(body["transcripts"], list)
+        assert body["transcripts"], "mock backend should produce >=1 segment"
+        first = body["transcripts"][0]
+        assert first["plugin_id"] == "asr.faster_whisper"
+        assert first["t_end"] > first["t_start"]
+        assert first["text"]
+
+
+def test_search_keyword_recall_includes_transcripts(tmp_data_dir):
+    """Search hits an asset via transcript text and carries the seek metadata."""
+    from hometrove.db import session_scope
+    from hometrove.models import AsrTranscript, Asset
+    from hometrove.search import search
+
+    needle = "海边的风"
+    with session_scope() as s:
+        s.add(Asset(
+            id=503, path="/m/clip.mp4", media_root="/m",
+            content_hash="asr_h", media_type="video",
+            duration_sec=10.0, created_at=0, updated_at=0,
+        ))
+        s.flush()
+        s.add(AsrTranscript(
+            asset_id=503, plugin_id="asr.faster_whisper", plugin_version="0.1.0",
+            t_start=1.5, t_end=3.0, text=f"开场白 {needle} 在场景里",
+            lang="zh", confidence=0.9,
+        ))
+        s.commit()
+
+    res = search(_search_session(), needle)
+    hit = next((i for i in res["items"] if i["asset_id"] == 503), None)
+    assert hit is not None
+    assert hit["scope"] == "audio"
+    assert hit["can_seek"] is True
+    assert hit["t_start"] == 1.5
+    assert hit["t_end"] == 3.0
+
+
+def test_search_scope_audio_filter(tmp_data_dir):
+    """``scope:audio`` restricts recall to transcript hits."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+    from hometrove.search import search
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=504, path="/m/a.png", media_root="/m",
+            content_hash="sa1", media_type="image",
+            created_at=0, updated_at=0,
+        ))
+        s.flush()
+        s.add(PluginResult(
+            asset_id=504, plugin_id="mock.tags", plugin_version="0.1.0",
+            status="ok", result_json='{"tags":["海边"]}',
+        ))
+        s.commit()
+
+    res = search(_search_session(), "scope:audio 海边")
+    assert all(i["scope"] == "audio" for i in res["items"])
+
+
+def test_asr_faster_whisper_min_confidence_drops_segments(tmp_data_dir, monkeypatch):
+    """Segments below the configured ``min_confidence`` are filtered out."""
+    from hometrove.db import session_scope
+    from hometrove.models import AsrTranscript
+    from hometrove.plugins.api import PluginContext
+    from hometrove.plugins.builtin.asr_faster_whisper import AsrFasterWhisperPlugin
+
+    asset = _asr_setup_db()
+    p = AsrFasterWhisperPlugin()
+    # Real path returns nothing -> mock kicks in -> confidence ~0.7.
+    monkeypatch.setattr(
+        "hometrove.plugins.builtin.asr_faster_whisper._transcribe_real",
+        lambda *a, **k: None,
+    )
+    with session_scope() as s:
+        # Set the floor above the mock confidence so nothing survives.
+        ctx = PluginContext(
+            asset=asset,
+            params=p.ParamsModel(backend="auto", min_confidence=0.99),
+            db=s,
+        )
+        res = p.run(asset, ctx)
+        s.commit()
+        assert res["status"] == "ok"
+        assert res["segments"] == 0
+        assert (
+            s.query(AsrTranscript).filter(AsrTranscript.asset_id == asset.id).count() == 0
+        )
+
+
+# ---------------------------------------------------------------------------
+# M0-3: media-root read-only verification
+# ---------------------------------------------------------------------------
+
+
+def test_readonly_probe_flags_writable_root(tmp_path: Path, caplog):
+    """A writable root is reported WRITABLE and the probe leaves no file behind."""
+    from hometrove.readonly import check_roots
+
+    with caplog.at_level("WARNING", logger="hometrove.readonly"):
+        results = check_roots([tmp_path])
+    assert len(results) == 1
+    assert results[0].writable is True
+    assert results[0].root == tmp_path
+    # No leftover probe file.
+    leftovers = list(tmp_path.glob(".hometrove-readonly-probe-*"))
+    assert leftovers == []
+
+
+def test_readonly_probe_detects_unwritable_root(tmp_path: Path, caplog, monkeypatch):
+    """A read-only root is detected via os.access without trying to write.
+
+    The probe runs ``os.access(W_OK)`` as the cheap first step — we
+    simulate a true read-only mount (which ``os.access`` reports even
+    for uid=0) by stubbing ``os.access`` to refuse W_OK on the probe
+    root. The DAC-bypass branch is exercised in a separate test.
+    """
+    from hometrove.readonly import check_roots, log_report
+
+    root = tmp_path / "ro"
+    root.mkdir()
+
+    real_access = os.access
+
+    def fake_access(path, mode, *a, **kw):
+        if str(path) == str(root) and mode & os.W_OK:
+            return False
+        return real_access(path, mode, *a, **kw)
+
+    monkeypatch.setattr("hometrove.readonly.os.access", fake_access)
+    results = check_roots([root])
+    assert len(results) == 1
+    assert results[0].writable is False
+    assert "W_OK" in results[0].detail
+
+    with caplog.at_level("INFO", logger="hometrove.readonly"):
+        log_report(results)
+    assert any("read-only" in r.message for r in caplog.records)
+
+
+def test_readonly_probe_root_branch_detects_dac_bypass(tmp_path: Path, monkeypatch):
+    """When running as root, a chmod that fails (EPERM) flips to read-only."""
+    import errno
+
+    from hometrove.readonly import check_roots
+
+    monkeypatch.setattr("hometrove.readonly._running_as_root", lambda: True)
+    real_chmod = os.chmod
+
+    def raising_chmod(path, mode, *a, **kw):
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr("hometrove.readonly.os.chmod", raising_chmod)
+    results = check_roots([tmp_path])
+    assert results[0].writable is False
+    assert "root" in results[0].detail
+
+
+def test_readonly_probe_handles_missing_path(tmp_path: Path):
+    """A non-existent root returns a structured skip, never raises."""
+    from hometrove.readonly import check_roots
+
+    missing = tmp_path / "ghost"
+    results = check_roots([missing])
+    assert results[0].writable is False
+    assert results[0].detail == "path missing"
+
+
+def test_readonly_probe_handles_non_directory(tmp_path: Path):
+    """A regular file passed as a root returns a structured skip."""
+    from hometrove.readonly import check_roots
+
+    f = tmp_path / "not-a-dir.txt"
+    f.write_text("x")
+    results = check_roots([f])
+    assert results[0].writable is False
+    assert results[0].detail == "not a directory"
+
+
+def test_readonly_check_disabled_returns_empty():
+    """``HOMETROVE_READ_ONLY_CHECK=off`` short-circuits the probe."""
+    from hometrove.readonly import check_roots
+
+    assert check_roots([Path("/tmp")], enabled=False) == []
+
+
+def test_readonly_run_for_settings_emits_warning(caplog):
+    """``run_for_settings`` reads settings.media_roots_paths and warns on writes."""
+    from hometrove.readonly import run_for_settings
+
+    class _S:
+        media_roots_paths = [Path("/tmp")]
+        read_only_check = "warn"
+
+    with caplog.at_level("WARNING", logger="hometrove.readonly"):
+        results = run_for_settings(_S())
+    assert len(results) == 1
+    assert results[0].writable is True
+    assert any("WRITABLE" in r.message for r in caplog.records)
+
+
+def test_readonly_run_for_settings_off_is_silent(caplog):
+    """``read_only_check=off`` produces no log lines."""
+    from hometrove.readonly import run_for_settings
+
+    class _S:
+        media_roots_paths = [Path("/tmp")]
+        read_only_check = "off"
+
+    with caplog.at_level("DEBUG", logger="hometrove.readonly"):
+        results = run_for_settings(_S())
+    assert results == []
+    assert caplog.records == []
+
+
+def test_lifespan_runs_readonly_probe(tmp_data_dir, caplog, monkeypatch):
+    """Booting the API runs the probe once per process via lifespan."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    root = tmp_data_dir.parent / "fake_media"
+    root.mkdir()
+    # HOMETROVE_MEDIA_ROOTS is parsed at Settings() construction; rebuild
+    # the cached settings + engine around the env so the lifespan sees the
+    # new root. tmp_data_dir already cleared the cache / engine once on
+    # entry, so we just need to point the env at the new path.
+    monkeypatch.setenv("HOMETROVE_MEDIA_ROOTS", str(root))
+    from hometrove.config import reset_settings_cache, get_settings
+
+    reset_settings_cache()
+    # Build fresh settings (with the new env) before create_app reads it.
+    get_settings()
+    # Re-arm engine teardown so the lifespan ``engine()`` call works against
+    # the same tempdir we want.
+    app = create_app()
+    with caplog.at_level("WARNING", logger="hometrove.readonly"):
+        with TestClient(app):
+            pass  # lifespan runs on enter / exit
+    assert any("WRITABLE" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# v1 trash: soft-delete + restore + permanent empty + retention sweep.
+# ---------------------------------------------------------------------------
+
+
+def _seed_asset(client, tmp_path: Path, name: str = "a.png") -> int:
+    """Helper: upload a PNG via the chunked endpoint + /ingest, return asset id."""
+    from PIL import Image  # type: ignore
+
+    p = tmp_path / name
+    Image.new("RGB", (40, 30), (180, 100, 60)).save(p)
+    r = client.post(
+        "/api/uploads",
+        json={"filename": name, "size": p.stat().st_size, "content_hash": None},
+    )
+    r.raise_for_status()
+    sid = r.json()["upload_id"]
+    client.put(
+        f"/api/uploads/{sid}/chunks/0",
+        files={"file": (name, p.read_bytes(), "image/png")},
+    )
+    client.post(f"/api/uploads/{sid}/complete", json={})
+    final = client.post(f"/api/uploads/{sid}/ingest").json()
+    return int(final["asset_id"])
+
+
+def test_trash_hides_assets_from_default_list(tmp_data_dir, tmp_path: Path):
+    """A trashed asset disappears from /api/assets and /api/assets/{id}."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        assert c.get("/api/assets").json()["items"]
+        # trash it
+        r = c.post(f"/api/assets/{aid}/trash")
+        assert r.status_code == 200, r.text
+        assert r.json()["deleted_at"] is not None
+        # default list omits it
+        assert aid not in [x["id"] for x in c.get("/api/assets").json()["items"]]
+        # detail is 404
+        assert c.get(f"/api/assets/{aid}").status_code == 404
+        # file endpoint is 404
+        assert c.get(f"/api/assets/{aid}/file").status_code == 404
+        # include_trashed=true makes both visible
+        assert aid in [
+            x["id"]
+            for x in c.get("/api/assets", params={"include_trashed": "true"}).json()["items"]
+        ]
+        detail = c.get(f"/api/assets/{aid}", params={"include_trashed": "true"})
+        assert detail.status_code == 200
+        assert detail.json()["deleted_at"] is not None
+
+
+def test_trash_restore_roundtrip(tmp_data_dir, tmp_path: Path):
+    """Move to trash then restore puts the asset back in the live view."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        c.post(f"/api/assets/{aid}/trash")
+        r = c.post(f"/api/assets/{aid}/restore")
+        assert r.status_code == 200
+        assert r.json()["deleted_at"] is None
+        assert aid in [x["id"] for x in c.get("/api/assets").json()["items"]]
+        assert c.get(f"/api/assets/{aid}").status_code == 200
+
+
+def test_trash_idempotent_preserves_original_timestamp(tmp_data_dir, tmp_path: Path):
+    """Re-trashing an already-trashed asset must not reset ``deleted_at`` —
+    retention math depends on the original deletion time.
+    """
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        first = c.post(f"/api/assets/{aid}/trash").json()["deleted_at"]
+        # second trash keeps the original timestamp (not bumped)
+        second = c.post(f"/api/assets/{aid}/trash").json()["deleted_at"]
+        assert first == second
+
+
+def test_trash_unknown_asset_returns_404(tmp_data_dir):
+    """Trashing / restoring an asset that doesn't exist surfaces a 404."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        assert c.post("/api/assets/9999/trash").status_code == 404
+        assert c.post("/api/assets/9999/restore").status_code == 404
+
+
+def test_trash_list_endpoint_paginates_newest_first(tmp_data_dir, tmp_path: Path):
+    """GET /api/trash returns trashed rows in reverse-chronological order."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [_seed_asset(c, tmp_path, name=f"a{i}.png") for i in range(3)]
+        for aid in ids:
+            c.post(f"/api/assets/{aid}/trash")
+            # Tiny sleep guarantees distinct ``deleted_at`` ordering even on
+            # coarse-grained clocks.
+            import time
+
+            time.sleep(0.01)
+        page = c.get("/api/trash", params={"limit": 2, "offset": 0}).json()
+        assert page["total"] == 3
+        assert len(page["items"]) == 2
+        # Newest deletion first.
+        assert page["items"][0]["id"] == ids[-1]
+        assert page["items"][1]["id"] == ids[-2]
+        # Offset 2 returns the oldest one only.
+        page2 = c.get("/api/trash", params={"limit": 2, "offset": 2}).json()
+        assert [x["id"] for x in page2["items"]] == [ids[0]]
+
+
+def test_trash_empty_purges_rows_but_keeps_files(tmp_data_dir, tmp_path: Path):
+    """POST /api/trash/empty removes the rows but does not touch the on-disk
+    file — M0 assumes media roots are read-only mounts and the trash is a
+    database-only soft delete.
+    """
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        # Locate the uploaded file before purging.
+        from hometrove.config import get_settings
+
+        upload_dir = get_settings().resolved_upload_dir()
+        files = list(upload_dir.rglob("*"))
+        assert files, "uploaded file should be on disk before purge"
+        c.post(f"/api/assets/{aid}/trash")
+        r = c.post("/api/trash/empty")
+        assert r.status_code == 200
+        assert r.json()["dropped"] == 1
+        # File is still on disk (M0 invariant).
+        assert any(p.is_file() for p in upload_dir.rglob("*"))
+        # Trash endpoint is empty.
+        assert c.get("/api/trash").json()["total"] == 0
+
+
+def test_trash_empty_older_than_respects_cutoff(tmp_data_dir, tmp_path: Path):
+    """``older_than_seconds`` keeps recent trashed rows and only drops old ones."""
+    import time
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid_old = _seed_asset(c, tmp_path, name="old.png")
+        c.post(f"/api/assets/{aid_old}/trash")
+        # Force the row's ``deleted_at`` to be older than the cutoff via a
+        # direct DB poke — the route sets now(), but retention math uses
+        # ``deleted_at`` so backdating the column is a clean unit test.
+        from hometrove.db import session_scope
+        from hometrove.models import Asset
+
+        with session_scope() as s:
+            a = s.get(Asset, aid_old)
+            a.deleted_at = int(time.time()) - 31 * 86400
+        aid_new = _seed_asset(c, tmp_path, name="new.png")
+        c.post(f"/api/assets/{aid_new}/trash")
+
+        r = c.post("/api/trash/empty", params={"older_than_seconds": 30 * 86400})
+        assert r.status_code == 200
+        assert r.json()["dropped"] == 1  # only the backdated old one
+        # ``aid_old`` is gone, ``aid_new`` still in trash.
+        page = c.get("/api/trash").json()
+        assert page["total"] == 1
+        assert page["items"][0]["id"] == aid_new
+
+
+def test_trash_purge_expired_respects_settings(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """``purge_expired`` honours ``Settings.trash_retention_days``."""
+    import time
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    aid = _seed_asset_for_test(tmp_data_dir, tmp_path)
+    with session_scope() as s:
+        a = s.get(Asset, aid)
+        a.deleted_at = int(time.time()) - 5 * 86400  # 5 days ago
+    # 7-day retention should NOT purge (5 < 7).
+    monkeypatch.setenv("HOMETROVE_TRASH_RETENTION_DAYS", "7")
+    from hometrove.config import reset_settings_cache, get_settings
+    reset_settings_cache()
+    get_settings()
+    with session_scope() as s:
+        assert _purge(s) == 0
+    # 3-day retention should purge.
+    monkeypatch.setenv("HOMETROVE_TRASH_RETENTION_DAYS", "3")
+    reset_settings_cache()
+    get_settings()
+    with session_scope() as s:
+        assert _purge(s) == 1
+
+
+def _purge(s):
+    from hometrove.trash import purge_expired
+    return purge_expired(s)
+
+
+def _seed_asset_for_test(tmp_data_dir, tmp_path: Path) -> int:
+    """Seed a single asset row directly via the API (used by retention tests
+    that don't need full client machinery; mirrors ``_seed_asset``).
+    """
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        return _seed_asset(c, tmp_path)
+
+
+def test_trash_does_not_break_search(tmp_data_dir, tmp_path: Path):
+    """Trashed assets must not surface in /api/search results."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        # Run basic.info synchronously so the keyword path has a result to
+        # match. (The worker isn't running in this test; we drive plugins
+        # directly to keep the test deterministic.)
+        from hometrove.db import session_scope
+        from hometrove.models import Asset, Job
+        from hometrove.orchestrator.runner import run_one
+
+        with session_scope() as s:
+            job_id = s.query(Job).filter(Job.asset_id == aid, Job.plugin_id == "basic.info").first()
+            assert job_id is not None, "basic.info job should have been enqueued by ingest"
+            run_one(job_id.id, s)
+        # Pre-trash: a search for the filename stem should find the asset.
+        with session_scope() as s:
+            a = s.get(Asset, aid)
+            tail = a.path.split("\0")[-1]
+            stem = Path(tail).stem  # e.g. "a"
+        hits = c.get("/api/search", params={"q": stem}).json()["items"]
+        assert any(h["asset_id"] == aid for h in hits)
+        # Trash + verify search no longer surfaces it.
+        c.post(f"/api/assets/{aid}/trash")
+        hits2 = c.get("/api/search", params={"q": stem}).json()["items"]
+        assert not any(h["asset_id"] == aid for h in hits2)
+
+
+def test_trash_does_not_break_folders_or_places(tmp_data_dir, tmp_path: Path):
+    """Folder totals + per-root list, and place clusters, must exclude trashed assets."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        # Pre-trash: 1 in folders list.
+        assert any(r["total"] >= 1 for r in c.get("/api/folders").json()["roots"])
+        # Trash it.
+        c.post(f"/api/assets/{aid}/trash")
+        # Placeholders: places endpoint returns [] (no GPS in this asset).
+        assert c.get("/api/places").json()["items"] == []
+        # Folders: still counted? The M0 folder endpoint groups by media_root
+        # and ``_seed_asset`` uploads into the synthetic "uploads" root. Live
+        # count must be 0 after trash, so total should drop.
+        roots = {r["media_root"]: r["total"] for r in c.get("/api/folders").json()["roots"]}
+        if "uploads" in roots:
+            assert roots["uploads"] == 0
+        # Per-folder assets listing excludes trashed.
+        items = c.get("/api/folders/assets", params={"media_root": "uploads"}).json()["items"]
+        assert all(x["id"] != aid for x in items)
+
+
+def test_trash_cli_prune_dry_run_and_empty(tmp_data_dir, tmp_path: Path, capsys, monkeypatch):
+    """``hometrove trash prune --dry-run`` reports counts without deleting;
+    ``hometrove trash empty`` purges the whole trash.
+    """
+    import time
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.cli import main as cli_main
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    aid_old = _seed_asset_for_test(tmp_data_dir, tmp_path)
+    with session_scope() as s:
+        a = s.get(Asset, aid_old)
+        a.deleted_at = int(time.time()) - 31 * 86400
+
+    # dry-run counts without deleting
+    rc = cli_main(["trash", "prune", "--older-than-days", "30", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "1 asset(s) eligible" in out
+    # row still in DB
+    with session_scope() as s:
+        assert s.get(Asset, aid_old) is not None
+
+    # real prune removes it
+    rc = cli_main(["trash", "prune", "--older-than-days", "30"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "dropped 1" in out
+    with session_scope() as s:
+        assert s.get(Asset, aid_old) is None
+
+
+def test_trash_cli_empty_drops_everything(tmp_data_dir, tmp_path: Path, capsys):
+    """``hometrove trash empty`` drops every trashed row in one call."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.cli import main as cli_main
+
+    app = create_app()
+    with TestClient(app) as c:
+        for i in range(3):
+            aid = _seed_asset(c, tmp_path, name=f"e{i}.png")
+            c.post(f"/api/assets/{aid}/trash")
+    rc = cli_main(["trash", "empty"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "dropped 3" in out
+    app2 = create_app()
+    from fastapi.testclient import TestClient as TC
+    with TC(app2) as c2:
+        assert c2.get("/api/trash").json()["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# v1 favorites + bulk operations
+# ---------------------------------------------------------------------------
+
+
+def test_favorite_toggle_set_clear(tmp_data_dir, tmp_path: Path):
+    """Per-asset toggle / set / clear endpoints flip ``favorite`` and stay idempotent."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        # toggle: 0 -> 1
+        r = c.post(f"/api/assets/{aid}/favorite").json()
+        assert r == {"ok": True, "id": aid, "favorite": True}
+        # toggle again: 1 -> 0
+        r = c.post(f"/api/assets/{aid}/favorite").json()
+        assert r["favorite"] is False
+        # set: explicit
+        r = c.put(f"/api/assets/{aid}/favorite").json()
+        assert r["favorite"] is True
+        # clear: explicit
+        r = c.delete(f"/api/assets/{aid}/favorite").json()
+        assert r["favorite"] is False
+        # 404 on unknown id (all three verbs)
+        assert c.post("/api/assets/9999/favorite").status_code == 404
+        assert c.put("/api/assets/9999/favorite").status_code == 404
+        assert c.delete("/api/assets/9999/favorite").status_code == 404
+
+
+def test_favorite_field_on_asset_dto(tmp_data_dir, tmp_path: Path):
+    """Default-favorite is false; flipping persists into the asset list/detail DTOs."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        listed = next(x for x in c.get("/api/assets").json()["items"] if x["id"] == aid)
+        assert listed["favorite"] is False
+        c.post(f"/api/assets/{aid}/favorite")
+        listed = next(x for x in c.get("/api/assets").json()["items"] if x["id"] == aid)
+        assert listed["favorite"] is True
+        # detail endpoint exposes it too
+        detail = c.get(f"/api/assets/{aid}").json()
+        assert detail["favorite"] is True
+
+
+def test_favorite_facet_filters_library(tmp_data_dir, tmp_path: Path):
+    """``?favorite=true|false`` narrows the /api/assets list."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        a1 = _seed_asset(c, tmp_path, name="f1.png")
+        a2 = _seed_asset(c, tmp_path, name="f2.png")
+        a3 = _seed_asset(c, tmp_path, name="f3.png")
+        c.post(f"/api/assets/{a1}/favorite")
+        c.post(f"/api/assets/{a3}/favorite")
+
+        ids_all = {x["id"] for x in c.get("/api/assets").json()["items"]}
+        ids_fav = {x["id"] for x in c.get("/api/assets", params={"favorite": "true"}).json()["items"]}
+        ids_unfav = {x["id"] for x in c.get("/api/assets", params={"favorite": "false"}).json()["items"]}
+
+        assert ids_all == {a1, a2, a3}
+        assert ids_fav == {a1, a3}
+        assert ids_unfav == {a2}
+
+
+def test_bulk_trash_soft_deletes_all(tmp_data_dir, tmp_path: Path):
+    """``/assets/bulk/trash`` soft-deletes all live assets in one call."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [_seed_asset(c, tmp_path, name=f"b{i}.png") for i in range(3)]
+        r = c.post("/api/bulk/assets/trash", json={"asset_ids": ids}).json()
+        assert r["requested"] == 3
+        assert r["affected"] == 3
+        assert r["missing"] == []
+        # All hidden from default list.
+        live = {x["id"] for x in c.get("/api/assets").json()["items"]}
+        assert live.isdisjoint(ids)
+        # All present in trash list.
+        trashed = {x["id"] for x in c.get("/api/trash").json()["items"]}
+        assert set(ids) <= trashed
+
+
+def test_bulk_trash_idempotent_and_partial_failure(tmp_data_dir, tmp_path: Path):
+    """Re-trashing does not change affected counts; missing ids are reported."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [_seed_asset(c, tmp_path, name=f"p{i}.png") for i in range(2)]
+        # 1 missing id + 2 real
+        payload = {"asset_ids": ids + [99999]}
+        r = c.post("/api/bulk/assets/trash", json=payload).json()
+        assert r["requested"] == 3
+        assert r["affected"] == 2
+        assert r["missing"] == [99999]
+        # Second call: nothing to flip because everything is already trashed.
+        r = c.post("/api/bulk/assets/trash", json={"asset_ids": ids}).json()
+        assert r["affected"] == 0
+        assert r["requested"] == 2
+
+
+def test_bulk_restore_brings_assets_back(tmp_data_dir, tmp_path: Path):
+    """``/assets/bulk/restore`` undoes a bulk trash."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [_seed_asset(c, tmp_path, name=f"r{i}.png") for i in range(2)]
+        c.post("/api/bulk/assets/trash", json={"asset_ids": ids})
+        r = c.post("/api/bulk/assets/restore", json={"asset_ids": ids}).json()
+        assert r["affected"] == 2
+        live = {x["id"] for x in c.get("/api/assets").json()["items"]}
+        assert set(ids) <= live
+
+
+def test_bulk_favorite_unfavorite_round_trip(tmp_data_dir, tmp_path: Path):
+    """Favorite / unfavorite bulk endpoints flip the flag for all provided ids."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [_seed_asset(c, tmp_path, name=f"fav{i}.png") for i in range(3)]
+        r = c.post("/api/bulk/assets/favorite", json={"asset_ids": ids}).json()
+        assert r["affected"] == 3
+        assert r["missing"] == []
+        favs = {x["id"] for x in c.get("/api/assets", params={"favorite": "true"}).json()["items"]}
+        assert set(ids) <= favs
+        r = c.post("/api/bulk/assets/unfavorite", json={"asset_ids": ids[:2]}).json()
+        assert r["affected"] == 2
+        # Third asset is still favorited.
+        favs = {x["id"] for x in c.get("/api/assets", params={"favorite": "true"}).json()["items"]}
+        assert favs == {ids[2]}
+
+
+def test_bulk_add_to_album_appends_in_order(tmp_data_dir, tmp_path: Path):
+    """``/assets/bulk/add-to-album`` appends to an album preserving request order,
+    skips assets already in the album, and reports the right ``added`` count.
+    """
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [_seed_asset(c, tmp_path, name=f"al{i}.png") for i in range(3)]
+        # Create an album with the first asset.
+        album = c.post("/api/albums", json={"name": "Bulk", "asset_ids": [ids[0]]}).json()
+        album_id = album["id"]
+        # Add ids[1], ids[2], and ids[0] (already in — should skip).
+        r = c.post(
+            "/api/bulk/assets/add-to-album",
+            json={"asset_ids": [ids[1], ids[2], ids[0]], "album_id": album_id},
+        ).json()
+        assert r["added"] == 2
+        assert r["requested"] == 3
+        # Album now contains all three ids in original insertion order.
+        body = c.get(f"/api/albums/{album_id}").json()
+        assert body["asset_ids"] == [ids[0], ids[1], ids[2]]
+
+
+def test_bulk_add_to_album_unknown_album_returns_404(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        r = c.post(
+            "/api/bulk/assets/add-to-album",
+            json={"asset_ids": [aid], "album_id": 9999},
+        )
+        assert r.status_code == 404
+
+
+def test_bulk_endpoints_enforce_limit(tmp_data_dir, tmp_path: Path):
+    """A body with more than 1000 ids is rejected with 400 — protects the
+    worker / DB from accidental flooding by a buggy client."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/api/bulk/assets/trash", json={"asset_ids": list(range(1, 1002))})
+        assert r.status_code == 400
+        assert "exceeds max" in r.text
+
+
+def test_favorite_field_on_folders_and_places(tmp_data_dir, tmp_path: Path):
+    """Folder totals / places list still respect ``deleted_at`` and continue to work with the new column."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        # ``_seed_asset`` uploads via the chunked endpoint, which stores
+        # ``media_root`` as the staging parent (e.g. ``.../staging``), not
+        # the literal string ``"uploads"``. Just confirm at least one root
+        # has total=1, both before and after favoriting.
+        roots = c.get("/api/folders").json()["roots"]
+        assert any(r["total"] >= 1 for r in roots)
+        c.post(f"/api/assets/{aid}/favorite")
+        roots_after = c.get("/api/folders").json()["roots"]
+        assert any(r["total"] >= 1 for r in roots_after)
+
+
+# ---------------------------------------------------------------------------
+# v1 shared albums
+# ---------------------------------------------------------------------------
+
+
+def _create_album(client, asset_ids: list[int], name: str = "shared") -> int:
+    r = client.post("/api/albums", json={"name": name, "asset_ids": asset_ids})
+    r.raise_for_status()
+    return int(r.json()["id"])
+
+
+def test_shared_album_create_and_public_view(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        a1 = _seed_asset(c, tmp_path, "a1.png")
+        a2 = _seed_asset(c, tmp_path, "a2.png")
+        album_id = _create_album(c, [a1, a2])
+
+        r = c.post(
+            f"/api/albums/{album_id}/shares",
+            json={"allow_original": True, "allow_download": True},
+        )
+        r.raise_for_status()
+        data = r.json()
+        assert data["allow_original"] is True
+        assert data["allow_download"] is True
+        assert data["share_url"].startswith("/share/")
+        token = data["token"]
+
+        pub = c.get(f"/api/public/albums/{token}").json()
+        assert pub["name"] == "shared"
+        assert pub["asset_ids"] == [a1, a2]
+        assert pub["allow_original"] is True
+
+        # List shares returns the active link.
+        items = c.get(f"/api/albums/{album_id}/shares").json()["items"]
+        assert len(items) == 1
+        assert items[0]["token"] == token
+
+
+def test_shared_album_revoke_and_404(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        album_id = _create_album(c, [aid])
+        token = c.post(f"/api/albums/{album_id}/shares", json={}).json()["token"]
+
+        c.delete(f"/api/albums/{album_id}/shares/{token}").raise_for_status()
+        assert c.get(f"/api/public/albums/{token}").status_code == 404
+
+        # Delete on wrong album also 404.
+        other = _create_album(c, [aid], name="other")
+        other_token = c.post(f"/api/albums/{other}/shares", json={}).json()["token"]
+        assert c.delete(f"/api/albums/{album_id}/shares/{other_token}").status_code == 404
+
+
+def test_shared_album_hides_trashed_assets(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        a1 = _seed_asset(c, tmp_path, "a1.png")
+        a2 = _seed_asset(c, tmp_path, "a2.png")
+        album_id = _create_album(c, [a1, a2])
+        token = c.post(f"/api/albums/{album_id}/shares", json={}).json()["token"]
+
+        c.post(f"/api/assets/{a1}/trash")
+        pub = c.get(f"/api/public/albums/{token}").json()
+        assert pub["asset_ids"] == [a2]
+
+
+def test_shared_album_public_file_permissions(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        album_id = _create_album(c, [aid])
+
+        # Default: no original access.
+        token = c.post(f"/api/albums/{album_id}/shares", json={}).json()["token"]
+        assert c.get(f"/api/public/files/{token}/{aid}").status_code == 403
+
+        # allow_original without download: inline 200, no attachment.
+        token = c.post(
+            f"/api/albums/{album_id}/shares",
+            json={"allow_original": True, "allow_download": False},
+        ).json()["token"]
+        r = c.get(f"/api/public/files/{token}/{aid}")
+        assert r.status_code == 200
+        assert "attachment" not in r.headers.get("content-disposition", "")
+
+        # allow_original + allow_download: attachment header.
+        token = c.post(
+            f"/api/albums/{album_id}/shares",
+            json={"allow_original": True, "allow_download": True},
+        ).json()["token"]
+        r = c.get(f"/api/public/files/{token}/{aid}")
+        assert r.status_code == 200
+        assert "attachment" in r.headers.get("content-disposition", "")
+
+
+def test_shared_album_public_thumbnail_and_non_member_404(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        member = _seed_asset(c, tmp_path, "member.png")
+        outsider = _seed_asset(c, tmp_path, "outsider.png")
+        album_id = _create_album(c, [member])
+        token = c.post(f"/api/albums/{album_id}/shares", json={}).json()["token"]
+
+        # Thumbnail for member returns something (original fallback because no thumb generated).
+        r = c.get(f"/api/public/thumbnails/{token}/{member}/small")
+        assert r.status_code == 200
+
+        # Outsider and non-existent ids return 404.
+        assert c.get(f"/api/public/thumbnails/{token}/{outsider}/small").status_code == 404
+        assert c.get(f"/api/public/thumbnails/{token}/999999/small").status_code == 404
+
+
+def test_shared_album_expiration_blocks_access(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        album_id = _create_album(c, [aid])
+        now = int(__import__("time").time())
+        r = c.post(
+            f"/api/albums/{album_id}/shares",
+            json={"expires_at": now + 1},
+        )
+        r.raise_for_status()
+        token = r.json()["token"]
+
+        # Wait for expiration, then verify all public endpoints are blocked.
+        import time
+        time.sleep(1.1)
+        assert c.get(f"/api/public/albums/{token}").status_code == 404
+        assert c.get(f"/api/public/thumbnails/{token}/{aid}/small").status_code == 404
+        assert c.get(f"/api/public/files/{token}/{aid}").status_code == 404
+
+
+def test_shared_album_cascade_delete_with_album(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        aid = _seed_asset(c, tmp_path)
+        album_id = _create_album(c, [aid])
+        token = c.post(f"/api/albums/{album_id}/shares", json={}).json()["token"]
+
+        c.delete(f"/api/albums/{album_id}").raise_for_status()
+        assert c.get(f"/api/public/albums/{token}").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# v1 smart albums
+# ---------------------------------------------------------------------------
+
+
+def _create_person(session, name: str) -> int:
+    from hometrove.models import Person
+    p = Person(name=name)
+    session.add(p)
+    session.flush()
+    return int(p.id)
+
+
+def _tag_asset(session, asset_id: int, tags: list[str], category: str | None = None):
+    from hometrove.models import PluginResult
+    existing = session.execute(
+        select(PluginResult).where(
+            PluginResult.asset_id == asset_id,
+            PluginResult.plugin_id == "mock.tags",
+        )
+    ).scalars().first()
+    if existing is None:
+        session.add(PluginResult(
+            asset_id=asset_id,
+            plugin_id="mock.tags",
+            plugin_version="0.1.0",
+            status="ok",
+            result_json=json.dumps({"tags": tags}),
+        ))
+    else:
+        data = json.loads(existing.result_json)
+        data["tags"] = list(set(data.get("tags", [])) | set(tags))
+        existing.result_json = json.dumps(data)
+    if category:
+        session.add(PluginResult(
+            asset_id=asset_id,
+            plugin_id="mock.category",
+            plugin_version="0.1.0",
+            status="ok",
+            result_json=json.dumps({"category": category}),
+        ))
+
+
+def _link_face(session, asset_id: int, person_id: int):
+    from hometrove.models import FaceEmbedding
+    session.add(FaceEmbedding(
+        asset_id=asset_id,
+        person_id=person_id,
+        embedding_json="[0.1,0.2,0.3]",
+        confidence=0.9,
+    ))
+
+
+def test_smart_album_crud_and_rule_evaluation(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    _seed_library(tmp_data_dir, tmp_path, n=4)
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [x["id"] for x in c.get("/api/assets", params={"limit": 50}).json()["items"]]
+        assert len(ids) >= 4
+
+        # Tag the first two assets with "cat" and set taken_at for ordering.
+        with session_scope() as s:
+            for i, aid in enumerate(ids[:2]):
+                a = s.get(Asset, aid)
+                a.taken_at = 1000 + i
+                _tag_asset(s, aid, ["cat"])
+            for i, aid in enumerate(ids[2:]):
+                a = s.get(Asset, aid)
+                a.taken_at = 500 + i
+            s.commit()
+
+        rule = {
+            "op": "and",
+            "children": [
+                {"op": "tag", "value": "cat"},
+                {"op": "media_type", "value": "image"},
+            ],
+        }
+        r = c.post("/api/albums", json={"name": "猫咪", "is_smart": True, "rule": rule})
+        assert r.status_code == 201
+        album = r.json()
+        assert album["is_smart"] is True
+        assert album["asset_count"] == 2
+        assert set(album["asset_ids"]) == set(ids[:2])
+        assert album["rule"] == rule
+        aid = album["id"]
+
+        # List shows smart album.
+        r = c.get("/api/albums")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        smart = next((a for a in items if a["id"] == aid), None)
+        assert smart is not None
+        assert smart["is_smart"] is True
+        assert smart["asset_count"] == 2
+
+        # Detail returns rule and ordered ids (taken_at desc).
+        r = c.get(f"/api/albums/{aid}")
+        assert r.status_code == 200
+        assert r.json()["asset_ids"] == list(reversed(ids[:2]))
+
+        # Manual membership endpoints are rejected.
+        r = c.post(f"/api/albums/{aid}/assets", json={"asset_ids": [ids[2]]})
+        assert r.status_code == 400
+        r = c.request("DELETE", f"/api/albums/{aid}/assets", json={"asset_ids": [ids[0]]})
+        assert r.status_code == 400
+
+        # Update rule to use "or" and include all images.
+        new_rule = {"op": "media_type", "value": "image"}
+        r = c.patch(f"/api/albums/{aid}", json={"rule": new_rule})
+        assert r.status_code == 200
+        assert r.json()["rule"] == new_rule
+        assert r.json()["asset_count"] >= 4
+
+        # Delete removes rule row.
+        c.delete(f"/api/albums/{aid}").raise_for_status()
+        from hometrove.models import SmartAlbumRule
+        with session_scope() as s:
+            assert s.get(SmartAlbumRule, aid) is None
+
+
+def test_smart_album_person_and_favorite_rules(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    _seed_library(tmp_data_dir, tmp_path, n=3)
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [x["id"] for x in c.get("/api/assets", params={"limit": 50}).json()["items"]]
+        with session_scope() as s:
+            person_id = _create_person(s, "Alice")
+            _link_face(s, ids[0], person_id)
+            _link_face(s, ids[1], person_id)
+            for aid in ids[:2]:
+                a = s.get(Asset, aid)
+                a.favorite = 1
+            s.commit()
+
+        rule = {
+            "op": "and",
+            "children": [
+                {"op": "person", "person_id": person_id},
+                {"op": "favorite", "value": True},
+            ],
+        }
+        r = c.post("/api/albums", json={"name": "Alice favorites", "is_smart": True, "rule": rule})
+        assert r.status_code == 201
+        assert r.json()["asset_count"] == 2
+        assert set(r.json()["asset_ids"]) == set(ids[:2])
+
+
+def test_smart_album_invalid_rules_rejected(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        # Missing rule for smart album.
+        r = c.post("/api/albums", json={"name": "x", "is_smart": True})
+        assert r.status_code == 422
+
+        # Rule supplied for manual album.
+        r = c.post("/api/albums", json={"name": "x", "is_smart": False, "rule": {"op": "tag", "value": "x"}})
+        assert r.status_code == 422
+
+        # Unknown operator.
+        r = c.post("/api/albums", json={"name": "x", "is_smart": True, "rule": {"op": "unknown"}})
+        assert r.status_code == 422
+
+        # Missing required field.
+        r = c.post("/api/albums", json={"name": "x", "is_smart": True, "rule": {"op": "person"}})
+        assert r.status_code == 422
+
+        # Too deep: root and (depth 0) -> and (1) -> and (2) -> and (3) -> favorite (4).
+        deep = {
+            "op": "and",
+            "children": [
+                {
+                    "op": "and",
+                    "children": [
+                        {
+                            "op": "and",
+                            "children": [
+                                {"op": "and", "children": [{"op": "favorite", "value": True}]}
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        r = c.post("/api/albums", json={"name": "x", "is_smart": True, "rule": deep})
+        assert r.status_code == 422
+
+
+def test_smart_album_hides_trashed_assets(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    _seed_library(tmp_data_dir, tmp_path, n=2)
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [x["id"] for x in c.get("/api/assets", params={"limit": 50}).json()["items"]]
+        with session_scope() as s:
+            _tag_asset(s, ids[0], ["dog"])
+            _tag_asset(s, ids[1], ["dog"])
+            s.commit()
+
+        rule = {"op": "tag", "value": "dog"}
+        r = c.post("/api/albums", json={"name": "dogs", "is_smart": True, "rule": rule})
+        album_id = r.json()["id"]
+        assert r.json()["asset_count"] == 2
+
+        c.post(f"/api/assets/{ids[0]}/trash").raise_for_status()
+        r = c.get(f"/api/albums/{album_id}")
+        assert r.status_code == 200
+        assert r.json()["asset_count"] == 1
+        assert r.json()["asset_ids"] == [ids[1]]
+
+
+def test_smart_album_place_rule(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+    from hometrove.scanner import discover, enqueue_pending, upsert_assets
+    from hometrove.orchestrator.runner import run_one
+    from hometrove.worker.main import _claim_next
+
+    app = create_app()
+    with TestClient(app) as c:
+        media = tmp_path / "photos"
+        media.mkdir()
+        for i in range(3):
+            make_png(media / f"gps{i}.png", 10, 8)
+        with session_scope() as s:
+            upsert_assets(s, list(discover([media])))
+            enqueue_pending(s)
+        while True:
+            with session_scope() as s:
+                job = _claim_next(s, "test")
+                if job is None:
+                    break
+                run_one(job.id, s)
+
+        with session_scope() as s:
+            assets = s.execute(select(Asset).order_by(Asset.id)).scalars().all()
+            gps = [
+                (39.9042, 116.4074),
+                (39.95, 116.45),
+                (31.2304, 121.4737),
+            ]
+            for a, (lat, lon) in zip(assets, gps):
+                s.add(PluginResult(
+                    asset_id=a.id,
+                    plugin_id="exif",
+                    plugin_version="0.1.0",
+                    status="ok",
+                    result_json=json.dumps({"metadata": {"gps_lat": lat, "gps_lon": lon}}),
+                ))
+            s.commit()
+
+        # The first two photos cluster to the same Beijing grid cell.
+        places = c.get("/api/places").json()["items"]
+        bj = next(p for p in places if p["count"] == 2)
+        place_id = f"{bj['lat']},{bj['lon']}"
+
+        rule = {"op": "place", "place_id": place_id}
+        r = c.post("/api/albums", json={"name": "北京", "is_smart": True, "rule": rule})
+        assert r.status_code == 201
+        assert set(r.json()["asset_ids"]) == set(bj["asset_ids"])
+

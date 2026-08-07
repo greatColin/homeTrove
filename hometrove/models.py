@@ -36,6 +36,16 @@ class Asset(Base):
     duration_sec: Mapped[Optional[float]] = mapped_column(Float)
     created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+    # v1 trash: ``deleted_at`` is the soft-delete sentinel (epoch seconds).
+    # ``None`` (NULL) means the asset is live; non-null means it has been
+    # moved to trash and is hidden from default views. Permanent purge drops
+    # the row; we never touch the on-disk file because M0 assumes scanned
+    # media roots are read-only mounts.
+    deleted_at: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # v1 favorite: 1 = favorited, 0 (or NULL) = not. The column is integer so
+    # the existing tooling (sums / counts / indexable) handles it uniformly.
+    # The default is 0 so newly ingested assets do not need a separate write.
+    favorite: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     plugin_results: Mapped[list["PluginResult"]] = relationship(
         back_populates="asset",
@@ -46,6 +56,8 @@ class Asset(Base):
     __table_args__ = (
         Index("idx_assets_taken_at", "taken_at"),
         Index("idx_assets_media_type", "media_type"),
+        Index("idx_assets_deleted_at", "deleted_at"),
+        Index("idx_assets_favorite", "favorite"),
     )
 
 
@@ -191,6 +203,9 @@ class Album(Base):
     cover_asset_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("assets.id", ondelete="SET NULL")
     )
+    # v1 smart albums: 1 = rule-based album (membership evaluated on read),
+    # 0 = manual album backed by album_assets.
+    is_smart: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
 
@@ -199,6 +214,19 @@ class Album(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="AlbumAsset.position",
+    )
+    shares: Mapped[list["AlbumShare"]] = relationship(
+        back_populates="album",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="AlbumShare.created_at",
+    )
+    # v1 smart albums: one rule per smart album, deleted with the album.
+    smart_rule: Mapped[Optional["SmartAlbumRule"]] = relationship(
+        back_populates="album",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
     )
 
 
@@ -243,3 +271,95 @@ class PluginPreset(Base):
     is_builtin: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     plugin_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+
+class AsrTranscript(Base):
+    """A single speech-to-text segment produced by an ASR plugin.
+
+    One row per detected utterance / cue point. ``t_start`` / ``t_end`` are
+    seconds into the source media. ``text`` is the recognised utterance
+    (trimmed, no timestamps). ``lang`` is the BCP-47 language tag the ASR
+    reported (e.g. ``"zh"`` / ``"en"``); ``confidence`` is the model's
+    segment-level score when available.
+
+    The same source media may be re-transcribed with newer model versions;
+    rows are versioned by ``plugin_version`` so v1 / v2 outputs coexist and
+    the search/UI can pick one. The frontend's player joins ``t_start`` to
+    jump to the matching second when the user clicks a transcript hit.
+    """
+
+    __tablename__ = "asr_transcripts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False,
+    )
+    plugin_id: Mapped[str] = mapped_column(Text, nullable=False)
+    plugin_version: Mapped[str] = mapped_column(Text, nullable=False, default="0.0.0")
+    t_start: Mapped[float] = mapped_column(Float, nullable=False)
+    t_end: Mapped[float] = mapped_column(Float, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    lang: Mapped[Optional[str]] = mapped_column(Text)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+    __table_args__ = (
+        Index("idx_asr_asset_plugin_version", "asset_id", "plugin_id", "plugin_version"),
+        Index("idx_asr_asset_t_start", "asset_id", "t_start"),
+    )
+
+
+class AlbumShare(Base):
+    """A public share link for an album.
+
+    ``token`` is an opaque random token looked up on every public request.
+    ``allow_original`` and ``allow_download`` control access to the original
+    media file; ``expires_at`` optionally disables the link after a timestamp.
+    Deleting an album cascades and revokes all its share links.
+    """
+
+    __tablename__ = "album_shares"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    album_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("albums.id", ondelete="CASCADE"), nullable=False,
+    )
+    token: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    allow_original: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    allow_download: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, default="local")
+
+    album: Mapped["Album"] = relationship(back_populates="shares")
+
+    __table_args__ = (
+        Index("idx_album_shares_album", "album_id"),
+        Index("idx_album_shares_token", "token"),
+    )
+
+
+class SmartAlbumRule(Base):
+    """Stored rule expression for a smart album.
+
+    ``album_id`` is both the primary key and a cascading foreign key to
+    ``albums``. Deleting the album removes the rule. The rule is evaluated
+    on every read by ``hometrove.smart_albums.eval_rule``.
+    """
+
+    __tablename__ = "smart_album_rules"
+
+    album_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("albums.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    rule_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+    album: Mapped["Album"] = relationship(back_populates="smart_rule")
+
+    __table_args__ = (
+        Index("idx_smart_album_rules_album", "album_id"),
+    )

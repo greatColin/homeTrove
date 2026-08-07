@@ -13,6 +13,8 @@ import Plugins from "./routes/plugins";
 import Search from "./routes/search";
 import Albums from "./routes/albums";
 import Places from "./routes/places";
+import Trash from "./routes/trash";
+import SharedAlbum from "./routes/shared_album";
 
 const nav = [
   { to: "/search", label: "搜索" },
@@ -26,6 +28,7 @@ const nav = [
   { to: "/jobs", label: "索引任务" },
   { to: "/upload", label: "上传" },
   { to: "/plugins", label: "插件设置" },
+  { to: "/trash", label: "回收站" },
 ];
 
 function Brand() {
@@ -129,6 +132,8 @@ export default function App() {
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/upload" element={<Upload />} />
           <Route path="/plugins" element={<Plugins />} />
+          <Route path="/trash" element={<Trash />} />
+          <Route path="/share/:token" element={<SharedAlbum />} />
           <Route path="/asset/:id" element={<AssetDetail />} />
         </Routes>
       </main>

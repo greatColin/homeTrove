@@ -93,12 +93,34 @@ async def _publish(event_type: str, payload: dict) -> None:
         log.exception("failed to publish event")
 
 
+# v1 trash: a sweep tick that runs every ``_TRASH_PURGE_EVERY_TICKS`` claim
+# loops. At the default 0.5s poll that's ~30s — fast enough to keep the
+# trash tidy, slow enough that the SQL DELETE is a no-op most of the time.
+_TRASH_PURGE_EVERY_TICKS = 60
+
+
 async def main_async(stop: asyncio.Event) -> None:
     settings = get_settings()
     poll = settings.worker_poll_interval_seconds
     log.info("worker main_async started (poll=%.2fs)", poll)
+    tick = 0
     while not stop.is_set():
         try:
+            # v1 trash: light auto-purge tick. Off by default
+            # (``trash_auto_purge=False``) so first-time installs don't lose
+            # data; ops opt in via ``HOMETROVE_TRASH_AUTO_PURGE=true``.
+            # Runs every ``_TRASH_PURGE_EVERY_TICKS`` claims so the sweep
+            # overhead is negligible against the claim path.
+            if settings.trash_auto_purge and tick % _TRASH_PURGE_EVERY_TICKS == 0:
+                try:
+                    from hometrove.trash import purge_expired
+
+                    with session_scope() as s:
+                        purge_expired(s)
+                except Exception:  # noqa: BLE001
+                    log.exception("trash auto-purge tick failed")
+            tick += 1
+
             with session_scope() as s:
                 job = _claim_next(s, "")
             if job is None:
@@ -131,6 +153,12 @@ def _new_session():
 
 def run_forever() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    # M0-3: same per-root read-only warning the API lifespan emits, so the
+    # standalone ``hometrove worker`` process surfaces the privacy signal
+    # without booting uvicorn.
+    from hometrove.readonly import run_for_settings
+
+    run_for_settings(get_settings())
     stop = asyncio.Event()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
