@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { NavLink, Routes, Route } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
@@ -12,9 +12,10 @@ import PersonsPage from "./routes/persons";
 import Plugins from "./routes/plugins";
 import Search from "./routes/search";
 import Albums from "./routes/albums";
-import Places from "./routes/places";
 import Trash from "./routes/trash";
 import SharedAlbum from "./routes/shared_album";
+
+const Places = lazy(() => import("./routes/places"));
 
 const nav = [
   { to: "/search", label: "搜索" },
@@ -125,7 +126,14 @@ export default function App() {
           <Route path="/albums" element={<Albums />} />
           <Route path="/albums/:id" element={<Albums />} />
           <Route path="/folders" element={<Folders />} />
-          <Route path="/places" element={<Places />} />
+          <Route
+            path="/places"
+            element={
+              <Suspense fallback={<div className="p-6 text-sm text-neutral-500">加载地图…</div>}>
+                <Places />
+              </Suspense>
+            }
+          />
           <Route path="/tags" element={<FacetPage facet="tags" title="标签" emptyHint="按内容自动标记，点击标签查看对应文件。" />} />
           <Route path="/categories" element={<FacetPage facet="categories" title="分类" emptyHint="按内容自动归类，点击分类查看对应文件。" />} />
           <Route path="/faces" element={<PersonsPage />} />

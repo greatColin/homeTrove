@@ -21,7 +21,16 @@ pip install -e .
 pip install .
 ```
 
-依赖自动安装：FastAPI、uvicorn、SQLAlchemy 2.0、pydantic-settings、python-multipart、alembic、httpx。
+依赖自动安装：FastAPI、uvicorn、SQLAlchemy 2.0、pydantic-settings、python-multipart、alembic、httpx、PyAV、PySceneDetect、scenedetect、Pillow、numpy、InsightFace（仅 `face.detect` 首次运行时会自动下载 `buffalo_l` 模型权重）。
+
+### 可选依赖
+
+| 插件 | 可选包 | 不装时表现 | 何时需要 |
+|---|---|---|---|
+| `face.detect` | InsightFace + onnxruntime（默认随主包安装） | 返回 `skipped: insightface unavailable`（insightface 不可用） | 需要真实人脸检测 / 命名时 |
+| `asr.faster_whisper` | `pip install faster-whisper` | 返回 `skipped: faster_whisper unavailable`（使用 mock 字幕保持数据通路可观察） | 需要真实语音转写时 |
+
+> **`asr.faster_whisper` 默认 mock 路径**：v1 不强制要求 `faster-whisper`。即便不装包，插件仍会向 `asr_transcripts` 表写入 2–4 段确定性字幕，详情页和 `/api/search` 关键词召回照样可用。装上 `faster-whisper` 后下一次重跑会自动切到真模型（首次会下载 small 模型权重，约 460 MB）。
 
 ## 3. 配置环境变量
 
@@ -29,6 +38,9 @@ pip install .
 |---|---|---|---|
 | `HOMETROVE_MEDIA_ROOTS` | 是 | 空 | 媒体根目录，多个用 `\|` 分隔（如 `/photos\|/videos`） |
 | `HOMETROVE_DATA_DIR` | 否 | `./var` | 数据库与上传暂存目录（SQLite 文件 `hometrove.db` 在此） |
+| `HOMETROVE_READ_ONLY_CHECK` | 否 | `warn` | M0-3 媒体根只读校验级别：`warn`（默认，writable 根打印 WARNING + 提示）+ `off`（跳过探测）。生产建议保持只读挂载（`mount -o ro`），dev / 临时 scratch 目录可设为 `off` 关闭 |
+| `HOMETROVE_TRASH_RETENTION_DAYS` | 否 | `30` | v1 回收站软删除资产保留天数；`<=0` 关闭自动清理。配合 `HOMETROVE_TRASH_AUTO_PURGE=true` 使用 |
+| `HOMETROVE_TRASH_AUTO_PURGE` | 否 | `false` | 启用后 worker 每 ~30s 自动调用 `purge_expired()`。生产建议 `true` |
 | `HOMETROVE_LOG_LEVEL` | 否 | `INFO` | 日志级别 |
 
 示例：
@@ -38,7 +50,7 @@ export HOMETROVE_MEDIA_ROOTS=/mnt/photos
 export HOMETROVE_DATA_DIR=/var/lib/hometrove
 ```
 
-> **只读挂载**：M0 约定原始媒体目录只读。程序不会向媒体根目录写任何内容；上传的文件统一进入 `HOMETROVE_DATA_DIR/staging/`。
+> **只读挂载**：M0 约定原始媒体目录只读。程序不会向媒体根目录写任何内容；上传的文件统一进入 `HOMETROVE_DATA_DIR/staging/`。`hometrove` 启动时会为每个 `HOMETROVE_MEDIA_ROOTS` 路径写一个 1 字节 sentinel 后立即删除（探测用），若该路径可写则日志会输出 `WARNING: media root is WRITABLE — HomeTrove can modify originals: <path>`，并提示「set HOMETROVE_READ_ONLY_CHECK=off to silence, or remount the root read-only (mount -o ro)」。生产部署务必保持原始媒体目录只读挂载。
 
 ## 4. 启动服务（推荐：单命令）
 
@@ -101,7 +113,24 @@ hometrove api
 hometrove worker
 ```
 
-## 9. 修改前端（可选）
+## 9. 回收站维护（可选）
+
+`POST /api/assets/{id}/trash` 软删除资产，`/trash` 页可一键还原或永久清空。批量场景可直接用 `POST /api/bulk/assets/trash` / `restore`（body `{"asset_ids": [...]}`，上限 1000，返回 `{requested, affected, missing}`）。
+
+共享相册链接通过 `POST /api/albums/{album_id}/shares` 生成，公开访问路径为 `/share/{token}`；`allow_original`/`allow_download` 控制原图访问，`expires_at` 设置过期时间（秒级 Unix 时间戳）。定时清理可走以下两条路径之一：
+
+```bash
+# 路径 A：worker 内自动清扫（每 ~30s 一次）
+export HOMETROVE_TRASH_AUTO_PURGE=true
+export HOMETROVE_TRASH_RETENTION_DAYS=30   # 默认值
+
+# 路径 B：cron / systemd timer 一次性清理
+hometrove trash prune [--older-than-days N] [--dry-run]
+```
+
+注意：**软删除只动数据库索引，不删磁盘上的源文件**——HomeTrove 尊重 M0 关于「媒体根只读」的不变量。还原操作把资产重新加入索引；如果用户在外部手动删了文件，索引会保留到下一次 `hometrove scan` 的去重检查才消失。
+
+## 10. 修改前端（可选）
 
 前端为 React + Vite 源码（`web/`）。修改后需要 Node 环境重新构建，产物由 API 托管：
 
@@ -113,7 +142,7 @@ npm run build   # 产出 web/dist，API Server 重启后生效
 
 若不需要改前端，运行阶段完全不需要 Node。
 
-## 10. 常见问题
+## 11. 常见问题
 
 - **`hometrove: command not found`**：确认已 `pip install -e .`，且该命令在你的 PATH 中（通常 `~/.local/bin`）。
 - **扫描后 `jobs` 一直是 pending**：确认服务进程在运行（`hometrove serve` 或 `hometrove worker`）。

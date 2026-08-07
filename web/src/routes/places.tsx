@@ -1,13 +1,22 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { CircleMarker, MapContainer, TileLayer, Tooltip, useMap } from "react-leaflet";
 import { Link } from "react-router-dom";
 import { api, mediaLabel, thumbUrl, type PlaceCluster } from "../lib/api";
+import "leaflet/dist/leaflet.css";
 
-const W = 900;
-const H = 450;
-
-function project(lat: number, lon: number): { x: number; y: number } {
-  return { x: ((lon + 180) / 360) * W, y: ((90 - lat) / 180) * H };
+function FitBounds({ clusters }: { clusters: PlaceCluster[] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (clusters.length === 0) return;
+    const positions = clusters.map((c) => [c.lat, c.lon] as [number, number]);
+    if (positions.length === 1) {
+      map.setView(positions[0], 8);
+    } else {
+      map.fitBounds(positions, { padding: [24, 24] });
+    }
+  }, [map, clusters]);
+  return null;
 }
 
 function PlaceMap({
@@ -20,55 +29,52 @@ function PlaceMap({
   onSelect: (key: string) => void;
 }) {
   const max = Math.max(1, ...clusters.map((c) => c.count));
+  const center = clusters[0]
+    ? ([clusters[0].lat, clusters[0].lon] as [number, number])
+    : [0, 0];
   return (
-    <div className="relative overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
-        {[-120, -60, 0, 60, 120].map((lon) => (
-          <line
-            key={lon}
-            x1={((lon + 180) / 360) * W}
-            x2={((lon + 180) / 360) * W}
-            y1={0}
-            y2={H}
-            stroke="#d4d4d4"
-            strokeWidth={0.5}
-          />
-        ))}
-        {[-60, -30, 0, 30, 60].map((lat) => (
-          <line
-            key={lat}
-            y1={((90 - lat) / 180) * H}
-            y2={((90 - lat) / 180) * H}
-            x1={0}
-            x2={W}
-            stroke="#d4d4d4"
-            strokeWidth={0.5}
-          />
-        ))}
+    <div className="relative overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
+      <MapContainer
+        center={center}
+        zoom={3}
+        scrollWheelZoom
+        className="h-[450px] w-full"
+        style={{ background: "#e5e7eb" }}
+      >
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
         {clusters.map((c) => {
-          const { x, y } = project(c.lat, c.lon);
           const r = 4 + (c.count / max) * 12;
           const key = `${c.grid[0]},${c.grid[1]}`;
           const active = selected === key;
           return (
-            <circle
+            <CircleMarker
               key={key}
-              cx={x}
-              cy={y}
-              r={r}
-              fill={active ? "#6366f1" : "rgba(99,102,241,0.55)"}
-              stroke={active ? "#312e81" : "#c7d2fe"}
-              strokeWidth={active ? 2 : 1}
-              className="cursor-pointer transition hover:fill-indigo-500"
-              onClick={() => onSelect(active ? "" : key)}
+              center={[c.lat, c.lon]}
+              radius={r}
+              pathOptions={{
+                color: active ? "#312e81" : "#c7d2fe",
+                fillColor: active ? "#6366f1" : "rgba(99,102,241,0.55)",
+                fillOpacity: 0.9,
+                weight: active ? 2 : 1,
+              }}
+              eventHandlers={{ click: () => onSelect(active ? "" : key) }}
             >
-              <title>{`${c.lat.toFixed(2)}, ${c.lon.toFixed(2)} — ${c.count} 项`}</title>
-            </circle>
+              <Tooltip permanent direction="top" offset={[0, -r]}>
+                <span>{c.count}</span>
+              </Tooltip>
+              <Tooltip direction="center" opacity={0.95}>
+                <span>{`${c.lat.toFixed(2)}, ${c.lon.toFixed(2)} — ${c.count} 项`}</span>
+              </Tooltip>
+            </CircleMarker>
           );
         })}
-      </svg>
-      <p className="absolute left-2 top-2 rounded bg-black/50 px-1.5 py-0.5 text-xs text-white">
-        等距圆柱投影 · 点击圆点查看该地资产
+        <FitBounds clusters={clusters} />
+      </MapContainer>
+      <p className="absolute left-2 top-2 z-[1000] rounded bg-black/50 px-1.5 py-0.5 text-xs text-white">
+        Leaflet · OpenStreetMap · 点击圆点查看该地资产
       </p>
     </div>
   );
@@ -115,7 +121,10 @@ function ClusterAssets({ cluster }: { cluster: PlaceCluster }) {
 }
 
 export default function Places() {
-  const { data } = useQuery({ queryKey: ["places"], queryFn: api.places });
+  const { data, isError, refetch, isFetching } = useQuery({
+    queryKey: ["places"],
+    queryFn: api.places,
+  });
   const [selected, setSelected] = useState<string | null>(null);
 
   const clusters = useMemo(() => data?.items ?? [], [data]);
@@ -131,7 +140,17 @@ export default function Places() {
         依据 EXIF 中的 GPS 信息，按约 {(data?.grid ?? 0.5).toFixed(1)}° 网格聚类。
       </p>
 
-      {clusters.length === 0 ? (
+      {isError ? (
+        <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+          <p>地点数据加载失败。</p>
+          <button
+            onClick={() => refetch()}
+            className="mt-2 rounded bg-red-600 px-3 py-1 text-white hover:bg-red-700"
+          >
+            {isFetching ? "重试中…" : "重试"}
+          </button>
+        </div>
+      ) : clusters.length === 0 ? (
         <p className="mt-6 text-sm text-neutral-500">
           尚未发现带 GPS 坐标的照片。带位置信息的照片扫描并提取 EXIF 后会显示在这里。
         </p>
