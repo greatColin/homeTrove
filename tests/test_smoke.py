@@ -3396,3 +3396,133 @@ def test_assets_combined_filters(tmp_data_dir, tmp_path: Path):
         got = [x["id"] for x in r.json()["items"]]
         assert sorted(got) == [ids[0]]
 
+
+# ---------------------------------------------------------------------------
+# v1 image similarity: /api/assets/{id}/similar nearest-neighbour recall
+# ---------------------------------------------------------------------------
+
+
+def _seed_similar_assets():
+    """Seed 4 assets, each with a distinct image embedding, and return ids.
+
+    Asset A's vector is closest to B, then C, then D (Euclidean on a sparse
+    one-hot vector of dim 1024).
+    """
+    import json
+
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Embedding
+    from hometrove.vector import get_index
+
+    vectors = {
+        200: [1.0, 0.0, 0.0, 0.0],   # A
+        201: [0.9, 0.1, 0.0, 0.0],   # B (near A)
+        202: [0.5, 0.5, 0.0, 0.0],   # C (further)
+        203: [0.0, 0.0, 1.0, 0.0],   # D (far)
+    }
+    with session_scope() as s:
+        for aid, vec in vectors.items():
+            s.add(Asset(
+                id=aid, path=f"/p/{aid}.png", media_root="/p",
+                content_hash=f"sim{aid}", media_type="image",
+                created_at=0, updated_at=0,
+            ))
+        s.flush()
+        for aid, vec in vectors.items():
+            padded = [0.0] * 1024
+            padded[:4] = vec
+            row = Embedding(
+                asset_id=aid, plugin_id="embedding.jina_clip", plugin_version="0.1.0",
+                scope="image", t_start=None, t_end=None,
+                embedding_json=json.dumps(padded),
+            )
+            s.add(row)
+            s.flush()
+            get_index().upsert(row.id, padded, session=s)
+        s.commit()
+    return 200, [201, 202, 203]
+
+
+def test_similar_assets_ranking_and_self_exclusion(tmp_data_dir):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    anchor, others = _seed_similar_assets()
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get(f"/api/assets/{anchor}/similar")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["asset_id"] == anchor
+        ids = [it["asset_id"] for it in body["items"]]
+        # Self is excluded; neighbours sorted by distance ascending.
+        assert anchor not in ids
+        assert ids == others
+        dists = [it["distance"] for it in body["items"]]
+        assert dists == sorted(dists)
+        # Distance for the nearest neighbour is small (near-duplicate vector).
+        assert body["items"][0]["distance"] < 0.5
+
+
+def test_similar_assets_missing_embedding_returns_empty(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=299, path="/p/299.png", media_root="/p",
+            content_hash="sim299", media_type="image",
+            created_at=0, updated_at=0,
+        ))
+        s.commit()
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/assets/299/similar")
+        assert r.status_code == 200
+        assert r.json()["items"] == []
+
+
+def test_similar_assets_404_for_unknown_or_trashed(tmp_data_dir):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    _seed_similar_assets()
+    with session_scope() as s:
+        s.add(Asset(
+            id=298, path="/p/298.png", media_root="/p",
+            content_hash="sim298", media_type="image",
+            created_at=0, updated_at=0, deleted_at=123,
+        ))
+        s.commit()
+
+    app = create_app()
+    with TestClient(app) as c:
+        assert c.get("/api/assets/99999/similar").status_code == 404
+        assert c.get("/api/assets/298/similar").status_code == 404
+
+
+def test_similar_assets_excludes_trashed_neighbours(tmp_data_dir):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    anchor, others = _seed_similar_assets()
+    # Trash the nearest neighbour (id 201).
+    with session_scope() as s:
+        s.get(Asset, others[0]).deleted_at = 123
+        s.commit()
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get(f"/api/assets/{anchor}/similar")
+        assert r.status_code == 200
+        ids = [it["asset_id"] for it in r.json()["items"]]
+        assert 201 not in ids
+        assert ids == [202, 203]
+

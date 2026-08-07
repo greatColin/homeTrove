@@ -231,6 +231,25 @@ def get_asset(
     return dto
 
 
+@router.get("/assets/{asset_id}/similar", summary="Find visually similar assets")
+def similar_assets_endpoint(
+    asset_id: int,
+    limit: int = Query(24, ge=1, le=100, description="max neighbours to return"),
+    session: Session = Depends(get_db),
+):
+    """Return assets whose embedding is nearest to the given asset's.
+
+    Reuses the ``embedding.jina_clip`` vectors and the sqlite-vec index.
+    Excludes the target asset itself and soft-deleted assets.
+    """
+    from hometrove.search import similar_assets
+
+    a = session.get(Asset, asset_id)
+    if a is None or a.deleted_at is not None:
+        raise HTTPException(404, "asset not found")
+    return {"asset_id": asset_id, "items": similar_assets(session, asset_id, limit)}
+
+
 def _asset_path(a: Asset) -> Path | None:
     """Resolve an asset's on-disk file from its ``path`` column.
 

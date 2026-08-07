@@ -39,6 +39,34 @@ export interface TrashPage {
   offset: number;
 }
 
+export interface SimilarHitDTO {
+  asset_id: number;
+  media_type: string;
+  duration_sec: number | null;
+  distance: number;
+  scope: string;
+  t_start: number | null;
+  t_end: number | null;
+}
+
+export interface SearchHitDTO {
+  asset_id: number;
+  media_type: string;
+  duration_sec: number | null;
+  score: number;
+  rank: number;
+  scope: string;
+  t_start: number | null;
+  t_end: number | null;
+  can_seek: boolean;
+}
+
+export interface SearchResponse {
+  query: string;
+  total: number;
+  items: SearchHitDTO[];
+}
+
 export interface AssetDTO {
   id: number;
   path: string;
@@ -147,24 +175,6 @@ export interface PluginDTO {
   params_schema: Record<string, unknown>;
 }
 
-export interface SearchHitDTO {
-  asset_id: number;
-  media_type: string;
-  duration_sec: number | null;
-  score: number;
-  rank: number;
-  scope: string;
-  t_start: number | null;
-  t_end: number | null;
-  can_seek: boolean;
-}
-
-export interface SearchResponse {
-  query: string;
-  total: number;
-  items: SearchHitDTO[];
-}
-
 export interface AlbumDTO {
   id: number;
   name: string;
@@ -269,6 +279,8 @@ export const api = {
   },
   asset: (id: number, includeTrashed = false) =>
     request<AssetDetailDTO>(`/assets/${id}?${new URLSearchParams({ include_trashed: String(includeTrashed) })}`),
+  similar: (id: number, limit = 24) =>
+    request<{ asset_id: number; items: SimilarHitDTO[] }>(`/assets/${id}/similar?${new URLSearchParams({ limit: String(limit) })}`),
   toggleFavorite: (id: number) =>
     request<{ ok: boolean; id: number; favorite: boolean }>(`/assets/${id}/favorite`, {
       method: "POST",

@@ -1,11 +1,72 @@
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, mediaLabel } from "../lib/api";
+import { api, mediaLabel, thumbUrl, type SimilarHitDTO } from "../lib/api";
 import { PluginDataBlock, PLUGIN_LABELS } from "../components/kv";
 
 function fmtTs(ts: number | null | undefined): string {
   if (!ts) return "–";
   return new Date(ts * 1000).toLocaleString("zh-CN");
+}
+
+function SimilarCard({ hit }: { hit: SimilarHitDTO }) {
+  const isImage = hit.media_type === "image";
+  return (
+    <Link
+      to={`/asset/${hit.asset_id}`}
+      className="group relative m-[2px] block aspect-[4/3] overflow-hidden rounded-sm bg-neutral-200 dark:bg-neutral-800"
+    >
+      <img
+        src={thumbUrl(hit.asset_id, isImage ? "small" : "placeholder")}
+        alt=""
+        loading="lazy"
+        className="h-full w-full object-cover transition group-hover:scale-105"
+        onError={(e) => {
+          e.currentTarget.style.display = "none";
+        }}
+      />
+      {!isImage && (
+        <span className="absolute inset-0 flex items-center justify-center text-xs font-medium text-white/90">
+          <span className="rounded bg-black/50 px-2 py-0.5">{mediaLabel(hit.media_type)}</span>
+        </span>
+      )}
+      <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] text-white">
+        {(hit.distance * 100).toFixed(1)}%
+      </span>
+    </Link>
+  );
+}
+
+function SimilarSection({ assetId }: { assetId: number }) {
+  const { data, isFetching, isError, refetch } = useQuery({
+    queryKey: ["similar", assetId],
+    queryFn: () => api.similar(assetId, 24),
+    enabled: Number.isFinite(assetId),
+  });
+  const items: SimilarHitDTO[] = data?.items ?? [];
+
+  if (isFetching) {
+    return <p className="text-sm text-neutral-400">正在召回相似资源…</p>;
+  }
+  if (isError) {
+    return (
+      <p className="text-sm text-red-500">
+        相似搜索失败
+        <button onClick={() => refetch()} className="ml-2 underline">
+          重试
+        </button>
+      </p>
+    );
+  }
+  if (items.length === 0) {
+    return <p className="text-sm text-neutral-400">暂无相似资源。索引完成后会出现在这里。</p>;
+  }
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+      {items.map((h) => (
+        <SimilarCard key={h.asset_id} hit={h} />
+      ))}
+    </div>
+  );
 }
 
 export default function AssetDetail() {
@@ -146,6 +207,18 @@ export default function AssetDetail() {
           </div>
 
           <div className="mt-6 grid gap-4">
+            {!isTrashed && (
+              <section className="rounded-md border border-neutral-200 dark:border-neutral-800">
+                <header className="flex items-center justify-between border-b border-neutral-100 px-4 py-2 dark:border-neutral-800">
+                  <h2 className="text-sm font-medium">找相似</h2>
+                  <span className="text-xs text-neutral-400">基于向量近邻召回</span>
+                </header>
+                <div className="px-4 py-3">
+                  <SimilarSection assetId={asset.id} />
+                </div>
+              </section>
+            )}
+
             {pluginEntries.length === 0 && (
               <p className="text-sm text-neutral-400">
                 暂无插件分析数据。文件会由后台 worker 自动索引。

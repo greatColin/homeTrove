@@ -24,7 +24,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from hometrove.models import Asset, AsrTranscript, Embedding, PluginResult
@@ -263,3 +263,75 @@ def search(
         "total": len(fused),
         "items": items,
     }
+
+
+def similar_assets(
+    session: Session,
+    asset_id: int,
+    k: int = 24,
+) -> list[dict]:
+    """Find visually similar assets via nearest-neighbour embedding recall.
+
+    Uses the target asset's own embedding as the query vector. Image-scope
+    vectors (whole photo / video cover frame) are preferred; when the asset
+    only has scene vectors (video scenes), the first one is used. The target
+    asset itself and any soft-deleted asset are excluded from the result.
+    Returns [] when the asset has no embedding or the vector index is absent.
+    """
+    emb = session.execute(
+        select(Embedding).where(
+            Embedding.asset_id == asset_id,
+            Embedding.plugin_id == "embedding.jina_clip",
+        ).order_by(
+            case((Embedding.scope == "image", 0), else_=1),
+            Embedding.id,
+        )
+    ).scalars().first()
+    if emb is None:
+        return []
+
+    try:
+        vec = json.loads(emb.embedding_json)
+        rows = get_index().search(vec, k=k)
+    except Exception:  # noqa: BLE001 — missing index / bad vector -> empty
+        return []
+
+    emb_ids = [int(eid) for eid, _dist in rows]
+    if not emb_ids:
+        return []
+
+    embs = {
+        e.id: e
+        for e in session.execute(select(Embedding).where(Embedding.id.in_(emb_ids))).scalars().all()
+    }
+    assets: dict[int, Asset] = {}
+    live_ids = [e.asset_id for e in embs.values() if e.asset_id != asset_id]
+    if live_ids:
+        assets = {
+            a.id: a
+            for a in session.execute(select(Asset).where(Asset.id.in_(live_ids))).scalars().all()
+            if a.deleted_at is None
+        }
+
+    items: list[dict] = []
+    seen: set[int] = set()
+    for emb_id, dist in rows:
+        e = embs.get(int(emb_id))
+        if e is None or e.asset_id == asset_id or e.asset_id in seen:
+            continue
+        a = assets.get(e.asset_id)
+        if a is None:
+            continue
+        seen.add(e.asset_id)
+        items.append(
+            {
+                "asset_id": a.id,
+                "media_type": a.media_type,
+                "duration_sec": a.duration_sec,
+                "distance": round(float(dist), 6),
+                "scope": e.scope,
+                "t_start": e.t_start,
+                "t_end": e.t_end,
+            }
+        )
+    return items
