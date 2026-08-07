@@ -134,8 +134,8 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 ### 检索
 
 - [x] 高级筛选（媒体类型/日期范围/人物/地点/标签/收藏状态）—— **已完成，2026-08-07**：详见下方「v1 高级筛选」段
-- [ ] 语义搜索 `/search`（双路 + RRF，视频片段跳秒）→ 即 M1-7
-- [ ] 以图搜图（v1 简化：上传图或从资产出发召回相似项）
+- [x] 语义搜索 `/search`（双路 + RRF，视频片段跳秒）→ 即 M1-7
+- [x] 以图搜图（v1 简化：从资产出发召回相似项）—— **已完成，2026-08-07**：详见下方「v1 以图搜图」段
 
 ### 视频特有
 
@@ -448,6 +448,37 @@ hometrove trash empty                                     # 立即清空整回�
 
 - 新增 3 个测试：日期范围边界（`>=` / `<`）、place 网格过滤 + 非法格式 422、多条件组合（media_type+tag+person_id+favorite+日期）
 - 全量 117 测试通过（114 → 117）
+- 前端 `npx tsc --noEmit` 零错误，`npm run build` 通过
+
+---
+
+## v1 以图搜图（向量近邻召回）
+
+> 2026-08-07 完成。
+
+**目标**：从任意资产出发，召回视觉上最相似的资产，复用既有 `embedding.jina_clip` 向量管道（`embeddings` 表 + `embedding_vec` sqlite-vec 索引），不引入新依赖。
+
+**规格文档**：`.monkeycode/specs/v1-image-similarity/requirements.md` + `design.md`
+
+**后端**
+
+- `hometrove/search.py` 新增 `similar_assets(session, asset_id, k)`：
+  - 目标资产向量选择优先级：`image` scope 优先，其次任意 `scene`（`case` 排序 image first + `Embedding.id`）
+  - `get_index().search(vec, k)` 近邻召回 → 排除目标资产自身与软删除资产 → 同一资产去重后取首个近邻，距离升序
+  - 目标无向量或索引缺失：返回空列表（HTTP 200），不报错
+- `hometrove/api/routes/assets.py` 新增 `GET /api/assets/{asset_id}/similar?limit=`（默认 24，ge=1 le=100）
+  - 目标不存在或已软删除 → 404
+  - 每个命中返回 `asset_id` / `media_type` / `duration_sec` / `distance` / `scope` / `t_start` / `t_end`
+
+**前端**
+
+- `web/src/lib/api.ts`：新增 `SimilarHitDTO` + `api.similar(id, limit=24)`
+- `web/src/routes/asset_detail.tsx`：非回收站状态新增「找相似」区块（最近邻召回），结果网格复用 `search.tsx` 缩略图样式（`SimilarCard`：缩略图 + 视频占位 + 距离百分比角标），点击跳转 `/asset/{id}`；加载中/错误重试/空态三种状态
+
+**测试**
+
+- 新增 4 个测试：近邻排序 + 排除自身、无向量空列表、未知/软删除目标 404、排除软删除近邻
+- 全量 121 测试通过（117 → 121）
 - 前端 `npx tsc --noEmit` 零错误，`npm run build` 通过
 
 ---
