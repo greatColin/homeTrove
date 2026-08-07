@@ -133,7 +133,7 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 
 ### 检索
 
-- [ ] 高级筛选（媒体类型/日期范围/人物/地点/标签/相机/镜头）
+- [x] 高级筛选（媒体类型/日期范围/人物/地点/标签/收藏状态）—— **已完成，2026-08-07**：详见下方「v1 高级筛选」段
 - [ ] 语义搜索 `/search`（双路 + RRF，视频片段跳秒）→ 即 M1-7
 - [ ] 以图搜图（v1 简化：上传图或从资产出发召回相似项）
 
@@ -424,6 +424,31 @@ hometrove trash empty                                     # 立即清空整回�
 
 - 后端 `/api/places` 无改动，既有聚类测试保持覆盖；全量 114 测试通过
 - 前端 `npm run build` 通过
+
+---
+
+## v1 高级筛选（组合条件过滤 + 日期/地点后端支持）
+
+> 2026-08-07 完成。
+
+**目标**：时间轴页提供可展开的组合筛选面板，支持媒体类型、日期范围、人物、地点、标签、收藏状态叠加过滤，结果沿用 justified 网格 + 无限滚动。
+
+**实现**
+
+- 后端 `/api/assets` 新增参数（`hometrove/api/routes/assets.py`）
+  - `taken_after` / `taken_before`（epoch 秒，`>=` / `<` 边界，非法负值 422）
+  - `place`（聚类网格中心 `"lat,lon"`，pattern 校验，非法格式 422），复用 `smart_albums._place_ids` 判定网格单元
+  - 所有条件与既有 `media_type`/`favorite`/`tag`/`category`/`person_id` 取 AND 交叠
+- 前端
+  - `web/src/lib/api.ts`：`assets` 签名改为结构化 `AssetsFilters`，新增 `toggleFavorite`/`moveToTrash`/`restoreFromTrash`/`trash`/`emptyTrash`/`bulkTrash`/`bulkRestore`/`bulkFavorite`/`bulkAddToAlbum`，补齐 `AssetDTO.favorite`/`deleted_at`
+  - `web/src/routes/timeline.tsx`：新增 `FilterPanel`（媒体类型/收藏/日期起止/人物/地点/标签下拉，active 条件计数，一键清除全部），`queryKey` 绑定完整筛选条件
+  - 修复前序 v1 功能因 esbuild 不查类型而长期静默的前端类型错误（`bulk_actions`、`asset_detail`、`trash`、`places`、`albums`、`shared_album`、`kv`）——`npx tsc --noEmit` 从多报错归零
+
+**测试**
+
+- 新增 3 个测试：日期范围边界（`>=` / `<`）、place 网格过滤 + 非法格式 422、多条件组合（media_type+tag+person_id+favorite+日期）
+- 全量 117 测试通过（114 → 117）
+- 前端 `npx tsc --noEmit` 零错误，`npm run build` 通过
 
 ---
 
