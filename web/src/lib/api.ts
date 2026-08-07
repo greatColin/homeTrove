@@ -18,6 +18,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface BulkResult {
+  ok: boolean;
+  requested: number;
+  affected: number;
+  missing: number[];
+}
+
+export interface BulkAddToAlbumResult {
+  ok: boolean;
+  added: number;
+  requested: number;
+  missing: number[];
+}
+
+export interface TrashPage {
+  items: AssetDTO[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface AssetDTO {
   id: number;
   path: string;
@@ -29,6 +50,8 @@ export interface AssetDTO {
   height: number | null;
   duration_sec: number | null;
   updated_at: number | null;
+  favorite: boolean;
+  deleted_at: number | null;
   basic_info?: Record<string, unknown> | null;
 }
 
@@ -218,20 +241,73 @@ export interface UploadPresetDTO {
   created_at: number;
 }
 
+export interface AssetsFilters {
+  mediaType?: string;
+  favorite?: boolean;
+  tag?: string;
+  category?: string;
+  personId?: number;
+  takenAfter?: number;
+  takenBefore?: number;
+  place?: string;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
-  assets: (cursor?: number, mediaType?: string, facets?: Record<string, string>) =>
-    request<AssetPage>(
-      `/assets?${new URLSearchParams({
-        limit: "100",
-        ...(cursor ? { cursor: String(cursor) } : {}),
-        ...(mediaType ? { media_type: mediaType } : {}),
-        ...(facets?.tag ? { tag: facets.tag } : {}),
-        ...(facets?.category ? { category: facets.category } : {}),
-        ...(facets?.person_id ? { person_id: facets.person_id } : {}),
-      }).toString()}`,
+  assets: (cursor?: number, filters: AssetsFilters = {}) => {
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor !== undefined) params.set("cursor", String(cursor));
+    if (filters.mediaType) params.set("media_type", filters.mediaType);
+    if (filters.favorite !== undefined) params.set("favorite", String(filters.favorite));
+    if (filters.tag) params.set("tag", filters.tag);
+    if (filters.category) params.set("category", filters.category);
+    if (filters.personId !== undefined) params.set("person_id", String(filters.personId));
+    if (filters.takenAfter !== undefined) params.set("taken_after", String(filters.takenAfter));
+    if (filters.takenBefore !== undefined) params.set("taken_before", String(filters.takenBefore));
+    if (filters.place) params.set("place", filters.place);
+    return request<AssetPage>(`/assets?${params.toString()}`);
+  },
+  asset: (id: number, includeTrashed = false) =>
+    request<AssetDetailDTO>(`/assets/${id}?${new URLSearchParams({ include_trashed: String(includeTrashed) })}`),
+  toggleFavorite: (id: number) =>
+    request<{ ok: boolean; id: number; favorite: boolean }>(`/assets/${id}/favorite`, {
+      method: "POST",
+    }),
+  moveToTrash: (id: number) =>
+    request<{ ok: boolean; id: number; deleted_at: number | null }>(`/assets/${id}/trash`, {
+      method: "POST",
+    }),
+  restoreFromTrash: (id: number) =>
+    request<{ ok: boolean; id: number; deleted_at: number | null }>(`/assets/${id}/restore`, {
+      method: "POST",
+    }),
+  trash: (limit = 60, offset = 0) =>
+    request<TrashPage>(`/trash?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`),
+  emptyTrash: (olderThanSeconds?: number) =>
+    request<{ ok: boolean; dropped: number }>(
+      `/trash/empty${olderThanSeconds !== undefined ? `?older_than_seconds=${olderThanSeconds}` : ""}`,
+      { method: "POST" },
     ),
-  asset: (id: number) => request<AssetDetailDTO>(`/assets/${id}`),
+  bulkTrash: (assetIds: number[]) =>
+    request<BulkResult>("/bulk/assets/trash", {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds }),
+    }),
+  bulkRestore: (assetIds: number[]) =>
+    request<BulkResult>("/bulk/assets/restore", {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds }),
+    }),
+  bulkFavorite: (assetIds: number[], on: boolean) =>
+    request<BulkResult>(on ? "/bulk/assets/favorite" : "/bulk/assets/unfavorite", {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds }),
+    }),
+  bulkAddToAlbum: (assetIds: number[], albumId: number) =>
+    request<BulkAddToAlbumResult>("/bulk/assets/add-to-album", {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds, album_id: albumId }),
+    }),
   facets: () => request<Facets>("/facets"),
   jobs: () => request<JobsResponse>("/jobs"),
   retryJob: (id: number) =>

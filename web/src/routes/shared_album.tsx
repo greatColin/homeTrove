@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
-import { api, mediaLabel, publicFileUrl, publicThumbUrl, type AssetDTO, type SharedAlbumDTO } from "../lib/api";
-import { JustifiedGrid, type LayoutItem } from "../components/justified_grid";
+import { api, publicFileUrl, publicThumbUrl, type AssetDTO, type SharedAlbumDTO } from "../lib/api";
+import { JustifiedGrid } from "../components/justified_grid";
 
 export default function SharedAlbum() {
   const { token } = useParams();

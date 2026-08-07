@@ -223,7 +223,7 @@ function PersonPhotos({
   const [preview, setPreview] = useState<AssetDTO | null>(null);
   const { data, isFetching } = useQuery({
     queryKey: ["person-photos", person.id],
-    queryFn: () => api.assets(undefined, undefined, { person_id: String(person.id) }),
+    queryFn: () => api.assets(undefined, { personId: person.id }),
   });
   const items = data?.items ?? [];
   return (

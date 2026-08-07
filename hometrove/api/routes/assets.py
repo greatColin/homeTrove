@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from hometrove.config import get_settings
 from hometrove.db import get_db
 from hometrove.models import Album, AlbumAsset, Asset, AsrTranscript, FaceEmbedding, PluginResult
+from hometrove.smart_albums import _place_ids as _smart_place_ids
 from hometrove import trash as _trash
 
 
@@ -140,6 +141,9 @@ def list_assets(
     category: Optional[str] = None,
     person_id: Optional[int] = None,
     favorite: Optional[bool] = Query(None, description="v1 favorite: when true, only favorited assets; when false, only non-favorites; when omitted, no filter."),
+    taken_after: Optional[int] = Query(None, ge=0, description="v1 advanced filters: only assets with taken_at >= this epoch."),
+    taken_before: Optional[int] = Query(None, ge=0, description="v1 advanced filters: only assets with taken_at < this epoch."),
+    place: Optional[str] = Query(None, pattern=r"^-?\d+\.?\d*,-?\d+\.?\d*$", description="v1 advanced filters: place grid cell centre as 'lat,lon'."),
     include_trashed: bool = Query(False, description="v1 trash: include soft-deleted assets in the list. Default false so the user-visible library hides them."),
     session: Session = Depends(get_db),
 ):
@@ -152,6 +156,10 @@ def list_assets(
         stmt = stmt.where(Asset.media_type == media_type)
     if favorite is not None:
         stmt = stmt.where(Asset.favorite == (1 if favorite else 0))
+    if taken_after is not None:
+        stmt = stmt.where(Asset.taken_at >= taken_after)
+    if taken_before is not None:
+        stmt = stmt.where(Asset.taken_at < taken_before)
 
     # Facet filters narrow the result set to assets whose plugin output
     # contains the selected value. ``person_id`` filters via face_embeddings.
@@ -162,6 +170,9 @@ def list_assets(
             facet_ids = ids if facet_ids is None else (facet_ids & ids)
     if person_id is not None:
         ids = set(_person_asset_ids(session, person_id))
+        facet_ids = ids if facet_ids is None else (facet_ids & ids)
+    if place is not None:
+        ids = _smart_place_ids(session, place)
         facet_ids = ids if facet_ids is None else (facet_ids & ids)
     if facet_ids is not None:
         stmt = stmt.where(Asset.id.in_(facet_ids))

@@ -52,7 +52,7 @@ export default function FacetPage({
   } = useInfiniteQuery({
     queryKey: ["facet-assets", filterKey, selected],
     queryFn: ({ pageParam }) =>
-      api.assets(pageParam, undefined, selected ? { [filterKey]: selected } : {}),
+      api.assets(pageParam, selected ? { [filterKey]: selected } : {}),
     initialPageParam: undefined as number | undefined,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
     enabled: selected != null,

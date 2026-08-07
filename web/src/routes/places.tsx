@@ -29,8 +29,8 @@ function PlaceMap({
   onSelect: (key: string) => void;
 }) {
   const max = Math.max(1, ...clusters.map((c) => c.count));
-  const center = clusters[0]
-    ? ([clusters[0].lat, clusters[0].lon] as [number, number])
+  const center: [number, number] = clusters[0]
+    ? [clusters[0].lat, clusters[0].lon]
     : [0, 0];
   return (
     <div className="relative overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">

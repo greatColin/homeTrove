@@ -75,12 +75,13 @@ export function PluginDataBlock({
 }) {
   return (
     <div>
-      {Object.entries(data).map(([k, v]) => (
-        <Nested key={k} k={k} v={v} />
-      ))}
+      <span className="sr-only">plugin {pluginId}</span>
       {Object.keys(data).length === 0 && (
         <p className="py-2 text-sm text-neutral-400">无数据</p>
       )}
+      {Object.entries(data).map(([k, v]) => (
+        <Nested key={k} k={k} v={v} />
+      ))}
     </div>
   );
 }
@@ -139,6 +140,9 @@ export function PluginSection({
 }) {
   return (
     <section className="rounded-md border border-neutral-200 p-4 dark:border-neutral-800">
+      {title != null && (
+        <h2 className="mb-3 text-sm font-semibold text-neutral-700 dark:text-neutral-200">{title}</h2>
+      )}
       {children}
     </section>
   );

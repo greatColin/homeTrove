@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { api, mediaLabel, thumbUrl, type AlbumDTO, type AssetDTO, type ShareLinkDTO, type SmartAlbumRule } from "../lib/api";
+import { api, mediaLabel, thumbUrl, type AlbumDTO, type AssetDTO, type SmartAlbumRule } from "../lib/api";
+
+function fmtDate(ts: number | null | undefined): string {
+  if (!ts) return "–";
+  return new Date(ts * 1000).toLocaleDateString("zh-CN");
+}
 import { ShareModal } from "../components/share_modal";
 import { JustifiedGrid, type LayoutItem } from "../components/justified_grid";
 

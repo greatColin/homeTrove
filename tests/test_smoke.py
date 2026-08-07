@@ -3243,3 +3243,156 @@ def test_smart_album_place_rule(tmp_data_dir, tmp_path: Path):
         assert r.status_code == 201
         assert set(r.json()["asset_ids"]) == set(bj["asset_ids"])
 
+
+# ---------------------------------------------------------------------------
+# v1 advanced filters: /api/assets date range + place + combined conditions
+# ---------------------------------------------------------------------------
+
+
+def test_assets_taken_after_before_filter(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    _seed_library(tmp_data_dir, tmp_path, n=4)
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [x["id"] for x in c.get("/api/assets", params={"limit": 50}).json()["items"]]
+        assert len(ids) >= 4
+
+        with session_scope() as s:
+            for i, aid in enumerate(ids):
+                a = s.get(Asset, aid)
+                a.taken_at = 1000 + i * 100
+            s.commit()
+
+        # taken_after is inclusive (>=), taken_before is exclusive (<).
+        after = 1100
+        before = 1300
+        r = c.get("/api/assets", params={"taken_after": after, "taken_before": before})
+        assert r.status_code == 200
+        got = [x["id"] for x in r.json()["items"]]
+        expect = [aid for i, aid in enumerate(ids) if 1000 + i * 100 >= after and 1000 + i * 100 < before]
+        assert sorted(got) == sorted(expect)
+
+        # Only after.
+        r = c.get("/api/assets", params={"taken_after": 1200})
+        got = [x["id"] for x in r.json()["items"]]
+        expect = [aid for i, aid in enumerate(ids) if 1000 + i * 100 >= 1200]
+        assert sorted(got) == sorted(expect)
+
+        # Only before.
+        r = c.get("/api/assets", params={"taken_before": 1000})
+        got = [x["id"] for x in r.json()["items"]]
+        expect = [aid for i, aid in enumerate(ids) if 1000 + i * 100 < 1000]
+        assert sorted(got) == sorted(expect)
+
+        # Negative epoch rejected.
+        assert c.get("/api/assets", params={"taken_after": -1}).status_code == 422
+
+
+def test_assets_place_filter(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import engine, session_scope
+    from hometrove.models import Asset, PluginResult
+    from hometrove.scanner import discover, enqueue_pending, upsert_assets
+    from hometrove.orchestrator.runner import run_one
+    from hometrove.worker.main import _claim_next
+    import hometrove.plugins.builtin  # noqa: F401
+
+    engine()
+    media = tmp_path / "photos"
+    media.mkdir()
+    for i in range(3):
+        make_png(media / f"gps{i}.png", 10, 8)
+    with session_scope() as s:
+        upsert_assets(s, list(discover([media])))
+        enqueue_pending(s)
+    while True:
+        with session_scope() as s:
+            job = _claim_next(s, "test")
+            if job is None:
+                break
+            run_one(job.id, s)
+
+    with session_scope() as s:
+        assets = s.query(Asset).order_by(Asset.id).all()
+        assert len(assets) == 3
+        gps = [
+            (39.9042, 116.4074),
+            (39.95, 116.45),
+            (31.2304, 121.4737),
+        ]
+        for a, (lat, lon) in zip(assets, gps):
+            s.add(PluginResult(
+                asset_id=a.id,
+                plugin_id="exif",
+                plugin_version="0.1.0",
+                status="ok",
+                result_json=json.dumps({"metadata": {"gps_lat": lat, "gps_lon": lon}}),
+            ))
+        s.commit()
+
+    app = create_app()
+    with TestClient(app) as c:
+        places = c.get("/api/places").json()["items"]
+        bj = next(p for p in places if p["count"] == 2)
+        place_id = f"{bj['lat']},{bj['lon']}"
+        r = c.get("/api/assets", params={"place": place_id})
+        assert r.status_code == 200
+        got = [x["id"] for x in r.json()["items"]]
+        assert sorted(got) == sorted(bj["asset_ids"])
+
+        # Invalid place format: FastAPI pattern rejects.
+        assert c.get("/api/assets", params={"place": "not-a-place"}).status_code == 422
+
+
+def test_assets_combined_filters(tmp_data_dir, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    _seed_library(tmp_data_dir, tmp_path, n=4)
+    app = create_app()
+    with TestClient(app) as c:
+        ids = [x["id"] for x in c.get("/api/assets", params={"limit": 50}).json()["items"]]
+        assert len(ids) >= 4
+
+        person_id = None
+        with session_scope() as s:
+            for i, aid in enumerate(ids):
+                a = s.get(Asset, aid)
+                a.taken_at = 1000 + i
+                if i < 2:
+                    _tag_asset(s, aid, ["cat"])
+            person_id = _create_person(s, "Alice")
+            _link_face(s, ids[0], person_id)
+            s.commit()
+
+        # media_type + tag + person_id + favorite + date range together.
+        c.put(f"/api/assets/{ids[0]}/favorite")
+        r = c.get("/api/assets", params={
+            "media_type": "image",
+            "tag": "cat",
+            "person_id": person_id,
+            "favorite": "true",
+            "taken_after": 900,
+            "taken_before": 1200,
+        })
+        assert r.status_code == 200
+        got = [x["id"] for x in r.json()["items"]]
+        assert sorted(got) == [ids[0]]
+
+        # Dropping the person condition widens the set.
+        r = c.get("/api/assets", params={
+            "media_type": "image",
+            "tag": "cat",
+            "favorite": "true",
+            "taken_after": 900,
+        })
+        got = [x["id"] for x in r.json()["items"]]
+        assert sorted(got) == [ids[0]]
+
