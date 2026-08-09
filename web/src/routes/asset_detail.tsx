@@ -1,5 +1,5 @@
-import { useRef } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useEffect, useRef } from "react";
+import { useParams, useSearchParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, mediaLabel, thumbUrl, type SimilarHitDTO, type KeyframeDTO } from "../lib/api";
 import { PluginDataBlock, PLUGIN_LABELS } from "../components/kv";
@@ -41,6 +41,38 @@ function formatTime(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+interface SceneInfo {
+  start: number;
+  end: number;
+}
+
+function SceneScrubber({
+  scenes,
+  duration,
+  onSeek,
+}: {
+  scenes: SceneInfo[];
+  duration: number | null;
+  onSeek: (t: number) => void;
+}) {
+  if (!scenes || scenes.length === 0) return null;
+  const total = duration ?? scenes[scenes.length - 1].end;
+  if (!total || total <= 0) return null;
+  return (
+    <div className="mt-2 flex h-3 w-full overflow-hidden rounded bg-neutral-200 dark:bg-neutral-800">
+      {scenes.map((s, i) => (
+        <button
+          key={i}
+          title={`场景 ${i + 1} · ${formatTime(s.start)}–${formatTime(s.end)}`}
+          onClick={() => onSeek(s.start)}
+          className="h-full border-r border-white/60 bg-brand-500/70 transition hover:bg-brand-500"
+          style={{ width: `${((s.end - s.start) / total) * 100}%` }}
+        />
+      ))}
+    </div>
+  );
 }
 
 function KeyframeStrip({ assetId, onSeek }: { assetId: number; onSeek: (t: number) => void }) {
@@ -117,6 +149,8 @@ function SimilarSection({ assetId }: { assetId: number }) {
 export default function AssetDetail() {
   const { id } = useParams();
   const assetId = Number(id);
+  const [searchParams] = useSearchParams();
+  const rawT = searchParams.get("t");
   const qc = useQueryClient();
   const videoRef = useRef<HTMLVideoElement>(null);
   // Always include trashed rows so a user can browse a trashed asset's
@@ -154,6 +188,35 @@ export default function AssetDetail() {
     },
   });
 
+  const seekTo = (t: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (Number.isFinite(t) && t >= 0) {
+      v.currentTime = t;
+    }
+    v.play().catch(() => {});
+    v.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  const seekT = rawT ? Number(rawT) : NaN;
+  useEffect(() => {
+    if (!asset || asset.media_type !== "video" || !Number.isFinite(seekT) || seekT < 0) {
+      return;
+    }
+    const v = videoRef.current;
+    if (!v) return;
+    const apply = () => {
+      if (asset.duration_sec == null || seekT < asset.duration_sec) {
+        v.currentTime = seekT;
+      }
+    };
+    if (v.readyState >= 1) {
+      apply();
+    } else {
+      v.addEventListener("loadedmetadata", apply, { once: true });
+    }
+  }, [asset, seekT]);
+
   if (!Number.isFinite(assetId)) {
     return <p className="p-6 text-neutral-500">无效的资源 ID</p>;
   }
@@ -167,6 +230,10 @@ export default function AssetDetail() {
   const fileName = asset.path.split("\0").pop() ?? asset.path;
   const pluginEntries = Object.entries(asset.plugin_results ?? {});
   const isTrashed = asset.deleted_at != null;
+  const sceneData = asset.plugin_results?.["basic.scene_detect"]?.data;
+  const scenes: SceneInfo[] = Array.isArray(sceneData?.scenes)
+    ? (sceneData.scenes as SceneInfo[])
+    : [];
 
   return (
     <div className="p-4 md:p-6">
@@ -190,16 +257,17 @@ export default function AssetDetail() {
                 controls
                 className="w-full"
               />
+              {!isTrashed && scenes.length > 0 && (
+                <SceneScrubber
+                  scenes={scenes}
+                  duration={asset.duration_sec}
+                  onSeek={seekTo}
+                />
+              )}
               {!isTrashed && (
                 <KeyframeStrip
                   assetId={asset.id}
-                  onSeek={(t) => {
-                    const v = videoRef.current;
-                    if (!v) return;
-                    v.currentTime = t;
-                    v.play().catch(() => {});
-                    v.scrollIntoView({ behavior: "smooth", block: "nearest" });
-                  }}
+                  onSeek={seekTo}
                 />
               )}
             </>

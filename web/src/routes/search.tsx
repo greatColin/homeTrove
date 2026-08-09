@@ -80,7 +80,11 @@ function HitCard({ hit }: { hit: SearchHitDTO }) {
             ✕
           </button>
           <Link
-            to={`/asset/${hit.asset_id}`}
+            to={
+              hit.can_seek && hit.t_start != null
+                ? `/asset/${hit.asset_id}?t=${hit.t_start}`
+                : `/asset/${hit.asset_id}`
+            }
             className="absolute bottom-4 right-4 rounded-full bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/20"
             onClick={(e) => e.stopPropagation()}
           >
