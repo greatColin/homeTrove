@@ -139,8 +139,8 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 
 ### 视频特有
 
-- [ ] 场景切分（PySceneDetect，参数可调）→ M1-3
-- [ ] 关键帧抽取（每场景 N 张，N 可配置）
+- [x] 场景切分（PySceneDetect，参数可调）→ M1-3
+- [x] 关键帧抽取（每场景 N 张，N 可配置）—— **已完成，2026-08-07**：详见下方「v1 关键帧抽取」段
 - [ ] 视频栅格内静音预览播放（桌面 hover）
 - [ ] 播放器跳秒（命中片段从 `t_start` 播；时间轴场景切分点 scrubber）
 
@@ -479,6 +479,39 @@ hometrove trash empty                                     # 立即清空整回�
 
 - 新增 4 个测试：近邻排序 + 排除自身、无向量空列表、未知/软删除目标 404、排除软删除近邻
 - 全量 121 测试通过（117 → 121）
+- 前端 `npx tsc --noEmit` 零错误，`npm run build` 通过
+
+---
+
+## v1 关键帧抽取（每场景 N 张，N 可配置）
+
+> 2026-08-07 完成。
+
+**目标**：为视频资产基于 `basic.scene_detect` 的场景切分结果，每个场景抽取 `per_scene` 张关键帧落盘 JPEG 并记录时间戳，前端在视频详情页渲染关键帧条带、点击跳转到对应秒播放。
+
+**规格文档**：`.monkeycode/specs/v1-keyframe-extraction/requirements.md` + `design.md`
+
+**后端**
+
+- 新增插件 `basic.keyframes`（`hometrove/plugins/builtin/keyframes.py`）：
+  - 参数 `per_scene`（默认 1）/ `max_scenes`（48，防解码风暴）/ `max_side`（640）/ `quality`（85）
+  - 场景边界取自 `ctx.result_of("basic.scene_detect")`；无场景结果时整段视频按单窗口兜底抽帧
+  - `per_scene=1` 优先取场景中点（`keyframe` 时间戳）；`>1` 在 `[start, end]` 内均匀分布
+  - 复用 `ctx.frames(at_seconds=...)` 共享解码缓存；JPEG 落盘 `{data_dir}/keyframes/{asset_id}/`
+  - 非视频 / 源文件缺失 / 解码失败一律 `skipped`（绝不为 `failed`）
+- `hometrove/api/routes/assets.py` 新增：
+  - `GET /api/assets/{id}/keyframes` — 读取 `basic.keyframes` 结果返回 `{scene, index, t_sec, url}`；无结果空列表；目标不存在/已软删 404
+  - `GET /api/assets/{id}/keyframes/{scene}/{index}` — 服务关键帧 JPEG；文件缺失 404
+
+**前端**
+
+- `web/src/lib/api.ts`：新增 `KeyframeDTO` + `api.keyframes(id)`
+- `web/src/routes/asset_detail.tsx`：视频资产在播放器下方渲染横向滚动关键帧条带（`KeyframeStrip`）；点击关键帧把 `<video>` 的 `currentTime` 设为该帧时间戳并 `play()`，自动滚到可视区；关键帧为空则隐藏
+
+**测试**
+
+- 新增 5 个测试：每场景 N 张 + 时间戳在场景窗内 + 落盘校验、无场景兜底单帧、非视频/坏文件 skipped、列表接口（返回/空态/404）、图片接口（JPEG/404）
+- 全量 125 测试通过（121 → 125）
 - 前端 `npx tsc --noEmit` 零错误，`npm run build` 通过
 
 ---
