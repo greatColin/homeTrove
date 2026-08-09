@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { api, mediaLabel, thumbUrl, type AssetDTO, type AssetsFilters } from "../lib/api";
 import { BulkBar, useSelection } from "../components/bulk_actions";
 import { JustifiedGrid, type LayoutItem } from "../components/justified_grid";
+import { MutedVideoPreview } from "../components/muted_preview";
 
 interface CellProps {
   item: LayoutItem;
@@ -16,6 +17,7 @@ interface CellProps {
 
 function GridCell({ item, asset, selected, selectionMode, onClick, onToggleFavorite }: CellProps) {
   const isImage = asset.media_type === "image";
+  const [hovered, setHovered] = useState(false);
   const style: React.CSSProperties = {
     position: "absolute",
     left: item.left,
@@ -26,6 +28,8 @@ function GridCell({ item, asset, selected, selectionMode, onClick, onToggleFavor
   return (
     <div
       style={style}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       onClick={() => {
         if (selectionMode) onClick(asset);
       }}
@@ -39,7 +43,7 @@ function GridCell({ item, asset, selected, selectionMode, onClick, onToggleFavor
           e.stopPropagation();
           onClick(asset);
         }}
-        className="block h-full w-full"
+        className="relative block h-full w-full"
       >
         <img
           src={thumbUrl(asset.id, isImage ? "small" : "placeholder")}
@@ -55,6 +59,7 @@ function GridCell({ item, asset, selected, selectionMode, onClick, onToggleFavor
             el.style.display = "none";
           }}
         />
+        {!isImage && hovered && <MutedVideoPreview assetId={asset.id} />}
       </button>
       {!isImage && (
         <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs font-medium text-white/90">
