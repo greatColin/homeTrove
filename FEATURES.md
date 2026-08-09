@@ -141,7 +141,7 @@ M0 目标：不依赖任何 AI 模型，跑通「扫描 → 入库 → 浏览/�
 
 - [x] 场景切分（PySceneDetect，参数可调）→ M1-3
 - [x] 关键帧抽取（每场景 N 张，N 可配置）—— **已完成，2026-08-07**：详见下方「v1 关键帧抽取」段
-- [ ] 视频栅格内静音预览播放（桌面 hover）
+- [x] 视频栅格内静音预览播放（桌面 hover）—— **已完成，2026-08-07**：详见下方「v1 视频栅格静音预览」段
 - [ ] 播放器跳秒（命中片段从 `t_start` 播；时间轴场景切分点 scrubber）
 
 ### 索引与管理
@@ -512,6 +512,27 @@ hometrove trash empty                                     # 立即清空整回�
 
 - 新增 5 个测试：每场景 N 张 + 时间戳在场景窗内 + 落盘校验、无场景兜底单帧、非视频/坏文件 skipped、列表接口（返回/空态/404）、图片接口（JPEG/404）
 - 全量 125 测试通过（121 → 125）
+- 前端 `npx tsc --noEmit` 零错误，`npm run build` 通过
+
+---
+
+## v1 视频栅格静音预览（桌面 hover）
+
+> 2026-08-07 完成。
+
+**目标**：时间轴 justified 网格中，桌面端把鼠标悬停到视频缩略图上即静音原地播放预览，移开即停止，不点开也能快速了解视频内容。
+
+**规格文档**：`.monkeycode/specs/v1-muted-preview/requirements.md` + `design.md`
+
+**实现**
+
+- 新增通用组件 `web/src/components/muted_preview.tsx`：`MutedVideoPreview({assetId})` 渲染绝对定位覆盖的 `<video muted loop autoPlay playsInline preload="auto">`，`onError` 时静默隐藏（缩略图保持可见）
+- `web/src/routes/timeline.tsx` 的 `GridCell`：新增 `hovered` 状态（`onMouseEnter`/`onMouseLeave`），仅当 `media_type === "video"` 且悬停时才条件挂载预览组件；预览层 `pointer-events-none`，点击/选择/收藏交互完全不受影响
+- 未悬停单元不加载视频数据（条件挂载），离开即卸载释放解码资源，不影响虚拟滚动
+
+**测试**
+
+- 纯前端交互，无后端 API 变更；后端全量 125 测试保持全绿
 - 前端 `npx tsc --noEmit` 零错误，`npm run build` 通过
 
 ---
