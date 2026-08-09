@@ -250,6 +250,53 @@ def similar_assets_endpoint(
     return {"asset_id": asset_id, "items": similar_assets(session, asset_id, limit)}
 
 
+@router.get("/assets/{asset_id}/keyframes", summary="List per-scene keyframes for a video")
+def asset_keyframes(asset_id: int, session: Session = Depends(get_db)):
+    """Return the keyframe list produced by the ``basic.keyframes`` plugin.
+
+    Each item carries the scene index, frame index within the scene, the
+    timestamp (seconds) and a URL to the JPEG. Returns an empty list when the
+    asset has no keyframe result yet.
+    """
+    a = session.get(Asset, asset_id)
+    if a is None or a.deleted_at is not None:
+        raise HTTPException(404, "asset not found")
+    pr = session.get(PluginResult, (asset_id, "basic.keyframes", "0.1.0"))
+    if pr is None or pr.status != "ok":
+        return {"asset_id": asset_id, "items": []}
+    try:
+        data = json.loads(pr.result_json or "{}")
+    except json.JSONDecodeError:
+        return {"asset_id": asset_id, "items": []}
+    items = []
+    for kf in data.get("keyframes") or []:
+        items.append(
+            {
+                "scene": kf.get("scene"),
+                "index": kf.get("index"),
+                "t_sec": kf.get("t_sec"),
+                "url": f"/api/assets/{asset_id}/keyframes/{kf.get('scene')}/{kf.get('index')}",
+            }
+        )
+    return {"asset_id": asset_id, "items": items}
+
+
+@router.get("/assets/{asset_id}/keyframes/{scene}/{index}", summary="Serve one keyframe image")
+def asset_keyframe_file(
+    asset_id: int,
+    scene: int,
+    index: int,
+    session: Session = Depends(get_db),
+):
+    a = session.get(Asset, asset_id)
+    if a is None or a.deleted_at is not None:
+        raise HTTPException(404, "asset not found")
+    p = get_settings().resolved_data_dir() / "keyframes" / str(asset_id) / f"scene-{scene}-{index}.jpg"
+    if not p.is_file():
+        raise HTTPException(404, "keyframe not found")
+    return FileResponse(p, media_type="image/jpeg")
+
+
 def _asset_path(a: Asset) -> Path | None:
     """Resolve an asset's on-disk file from its ``path`` column.
 

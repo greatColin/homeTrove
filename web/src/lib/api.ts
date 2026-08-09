@@ -49,6 +49,13 @@ export interface SimilarHitDTO {
   t_end: number | null;
 }
 
+export interface KeyframeDTO {
+  scene: number;
+  index: number;
+  t_sec: number;
+  url: string;
+}
+
 export interface SearchHitDTO {
   asset_id: number;
   media_type: string;
@@ -281,6 +288,8 @@ export const api = {
     request<AssetDetailDTO>(`/assets/${id}?${new URLSearchParams({ include_trashed: String(includeTrashed) })}`),
   similar: (id: number, limit = 24) =>
     request<{ asset_id: number; items: SimilarHitDTO[] }>(`/assets/${id}/similar?${new URLSearchParams({ limit: String(limit) })}`),
+  keyframes: (id: number) =>
+    request<{ asset_id: number; items: KeyframeDTO[] }>(`/assets/${id}/keyframes`),
   toggleFavorite: (id: number) =>
     request<{ ok: boolean; id: number; favorite: boolean }>(`/assets/${id}/favorite`, {
       method: "POST",

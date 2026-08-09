@@ -1,6 +1,7 @@
+import { useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, mediaLabel, thumbUrl, type SimilarHitDTO } from "../lib/api";
+import { api, mediaLabel, thumbUrl, type SimilarHitDTO, type KeyframeDTO } from "../lib/api";
 import { PluginDataBlock, PLUGIN_LABELS } from "../components/kv";
 
 function fmtTs(ts: number | null | undefined): string {
@@ -33,6 +34,50 @@ function SimilarCard({ hit }: { hit: SimilarHitDTO }) {
         {(hit.distance * 100).toFixed(1)}%
       </span>
     </Link>
+  );
+}
+
+function formatTime(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function KeyframeStrip({ assetId, onSeek }: { assetId: number; onSeek: (t: number) => void }) {
+  const { data, isFetching } = useQuery({
+    queryKey: ["keyframes", assetId],
+    queryFn: () => api.keyframes(assetId),
+    enabled: Number.isFinite(assetId),
+  });
+  const items: KeyframeDTO[] = data?.items ?? [];
+
+  if (isFetching) {
+    return <p className="px-1 py-2 text-xs text-neutral-400">关键帧加载中…</p>;
+  }
+  if (items.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+      {items.map((kf) => (
+        <button
+          key={`${kf.scene}-${kf.index}`}
+          onClick={() => onSeek(kf.t_sec)}
+          title={`跳转到 ${formatTime(kf.t_sec)}`}
+          className="group relative shrink-0 overflow-hidden rounded-md bg-neutral-100 dark:bg-neutral-900"
+        >
+          <img
+            src={kf.url}
+            alt={`场景 ${kf.scene} 关键帧 ${kf.index}`}
+            loading="lazy"
+            className="h-16 w-28 object-cover transition group-hover:scale-105"
+          />
+          <span className="absolute bottom-0.5 left-0.5 rounded bg-black/60 px-1 text-[10px] text-white">
+            {formatTime(kf.t_sec)}
+          </span>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -73,6 +118,7 @@ export default function AssetDetail() {
   const { id } = useParams();
   const assetId = Number(id);
   const qc = useQueryClient();
+  const videoRef = useRef<HTMLVideoElement>(null);
   // Always include trashed rows so a user can browse a trashed asset's
   // detail from the Trash page; the ``deleted_at`` field on the response
   // decides which action buttons to render.
@@ -137,11 +183,26 @@ export default function AssetDetail() {
               className="h-auto w-full object-contain"
             />
           ) : asset.media_type === "video" ? (
-            <video
-              src={`/api/assets/${asset.id}/file`}
-              controls
-              className="w-full"
-            />
+            <>
+              <video
+                ref={videoRef}
+                src={`/api/assets/${asset.id}/file`}
+                controls
+                className="w-full"
+              />
+              {!isTrashed && (
+                <KeyframeStrip
+                  assetId={asset.id}
+                  onSeek={(t) => {
+                    const v = videoRef.current;
+                    if (!v) return;
+                    v.currentTime = t;
+                    v.play().catch(() => {});
+                    v.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                  }}
+                />
+              )}
+            </>
           ) : (
             <div className="flex h-48 items-center justify-center text-neutral-400">
               {mediaLabel(asset.media_type)}

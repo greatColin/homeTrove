@@ -3526,3 +3526,182 @@ def test_similar_assets_excludes_trashed_neighbours(tmp_data_dir):
         assert 201 not in ids
         assert ids == [202, 203]
 
+
+# ---------------------------------------------------------------------------
+# v1 keyframe extraction: basic.keyframes plugin + /keyframes endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_keyframes_plugin_per_scene(tmp_data_dir, tmp_path: Path):
+    """Each scene yields ``per_scene`` keyframes with in-window timestamps."""
+    import json
+    from PIL import Image
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.keyframes import KeyframesPlugin
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, w=160, h=120, frames=24)
+
+    p = KeyframesPlugin()
+    asset = AssetLike(
+        id=301, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="kf",
+    )
+    # Inject scene_detect output through the DB result_of surface.
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=301, path=str(src), media_root=str(src.parent),
+            content_hash="kf", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        s.add(PluginResult(
+            asset_id=301, plugin_id="basic.scene_detect", plugin_version="0.1.0",
+            status="ok",
+            result_json=json.dumps({
+                "scenes": [
+                    {"start": 0.0, "end": 0.25, "keyframe": 0.125},
+                    {"start": 0.25, "end": 0.5, "keyframe": 0.375},
+                    {"start": 0.5, "end": 0.75, "keyframe": 0.625},
+                    {"start": 0.75, "end": 1.0, "keyframe": 0.875},
+                ]
+            }),
+        ))
+        s.commit()
+
+        params = p.ParamsModel(per_scene=2)
+        ctx = PluginContext(asset=asset, params=params, db=s, data_dir=tmp_data_dir)
+        res = p.run(asset, ctx)
+        s.commit()
+        assert res["status"] == "ok"
+        assert res["scene_count"] == 4
+        assert res["total"] == 8
+
+    for kf in res["keyframes"]:
+        assert 0.0 <= kf["t_sec"] <= 1.0
+        assert kf["scene"] in (0, 1, 2, 3)
+        dest = tmp_data_dir / "keyframes" / "301" / kf["file"]
+        assert dest.is_file()
+        im = Image.open(dest)
+        assert im.size[0] <= 640 and im.size[1] <= 240
+
+
+def test_keyframes_plugin_no_scenes_falls_back(tmp_data_dir, tmp_path: Path):
+    """Without scene_detect output, the whole video is a single window."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.keyframes import KeyframesPlugin
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, w=160, h=120, frames=24)
+
+    p = KeyframesPlugin()
+    asset = AssetLike(
+        id=302, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="kf2",
+    )
+    ctx = PluginContext(asset=asset, params=p.ParamsModel(), data_dir=tmp_data_dir)
+    res = p.run(asset, ctx)
+    assert res["status"] == "ok"
+    assert res["scene_count"] == 0
+    assert res["total"] == 1  # cover frame at 0s
+    assert res["keyframes"][0]["t_sec"] == 0.0
+    assert (tmp_data_dir / "keyframes" / "302" / res["keyframes"][0]["file"]).is_file()
+
+
+def test_keyframes_plugin_skips_non_video_and_bad_decode(tmp_data_dir, tmp_path: Path):
+    """Non-video assets and undecodable videos are skipped, not failed."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.keyframes import KeyframesPlugin
+
+    p = KeyframesPlugin()
+
+    img = tmp_path / "img.png"
+    make_png(img)
+    img_asset = AssetLike(
+        id=303, path=str(img), media_root=str(img.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="kf3",
+    )
+    assert p.run(img_asset, PluginContext(asset=img_asset, params=p.ParamsModel(), data_dir=tmp_data_dir))["status"] == "skipped"
+
+    bad = tmp_path / "bad.mp4"
+    bad.write_bytes(b"fragmented fake video payload")
+    bad_asset = AssetLike(
+        id=304, path=str(bad), media_root=str(bad.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="kf4",
+    )
+    assert p.run(bad_asset, PluginContext(asset=bad_asset, params=p.ParamsModel(), data_dir=tmp_data_dir))["status"] == "skipped"
+
+
+def test_keyframes_endpoints(tmp_data_dir, tmp_path: Path):
+    """List + file endpoints expose keyframe results with proper 404s."""
+    import json
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, w=160, h=120, frames=24)
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=305, path=str(src), media_root=str(src.parent),
+            content_hash="kf5", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        s.add(Asset(
+            id=306, path=str(tmp_path / "clip2.mp4"), media_root=str(tmp_path),
+            content_hash="kf6", media_type="video",
+            created_at=0, updated_at=0, deleted_at=123,
+        ))
+        s.commit()
+
+    # Run the plugin once against asset 305 so files + result exist.
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.keyframes import KeyframesPlugin
+
+    p = KeyframesPlugin()
+    asset = AssetLike(
+        id=305, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="kf5",
+    )
+    with session_scope() as s:
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s, data_dir=tmp_data_dir))
+        s.add(PluginResult(
+            asset_id=305, plugin_id="basic.keyframes", plugin_version="0.1.0",
+            status=res["status"], result_json=json.dumps(res),
+        ))
+        s.commit()
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/assets/305/keyframes")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["asset_id"] == 305
+        assert len(body["items"]) == 1
+        item = body["items"][0]
+        assert item["scene"] == 0 and item["index"] == 0 and item["t_sec"] == 0.0
+        assert item["url"] == "/api/assets/305/keyframes/0/0"
+
+        # The file endpoint serves a real JPEG.
+        fr = c.get(item["url"])
+        assert fr.status_code == 200
+        assert fr.headers["content-type"].startswith("image/jpeg")
+        assert len(fr.content) > 0
+
+        # Asset with no keyframe result -> empty list.
+        r = c.get("/api/assets/305/keyframes")  # still populated above
+        assert r.status_code == 200
+
+        # Trashed / unknown assets -> 404 on both endpoints.
+        assert c.get("/api/assets/306/keyframes").status_code == 404
+        assert c.get("/api/assets/99999/keyframes").status_code == 404
+        assert c.get("/api/assets/306/keyframes/0/0").status_code == 404
+        assert c.get("/api/assets/99999/keyframes/0/0").status_code == 404
+
+        # Missing file -> 404.
+        assert c.get("/api/assets/305/keyframes/9/9").status_code == 404
+
