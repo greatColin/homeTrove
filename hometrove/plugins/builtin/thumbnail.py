@@ -41,6 +41,7 @@ _DEFAULT_MAX_SIZE = _SIZES["small"]
 class ThumbnailPlugin(BasePlugin):
     id: str = "thumbnail"
     name: str = "缩略图"
+    description: str = "生成多档位缩略图（封面 120px、列表 320px、详情 640px），视频抽首帧为缩略图"
     version: str = "0.2.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = []

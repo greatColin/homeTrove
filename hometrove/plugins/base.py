@@ -28,6 +28,7 @@ class BasePlugin:
 
     id: ClassVar[str] = ""
     name: ClassVar[str] = ""
+    description: ClassVar[str] = ""   # one-line description shown in plugin settings
     version: ClassVar[str] = "0.1.0"
     supported_media: ClassVar[set[str]] = set()
     depends_on: ClassVar[list[str]] = []

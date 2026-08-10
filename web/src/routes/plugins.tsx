@@ -216,8 +216,11 @@ export default function Plugins() {
                   <div className="font-mono text-xs text-neutral-400">{p.id}</div>
                 </td>
                 <td className="px-3 py-2 text-neutral-500">
+                  {p.description && (
+                    <span className="block text-xs leading-relaxed">{p.description}</span>
+                  )}
                   {p.depends_on.length > 0 && (
-                    <span className="block text-xs text-neutral-400">
+                    <span className="mt-0.5 block text-xs text-neutral-400">
                       依赖：{p.depends_on.join(", ")}
                     </span>
                   )}

@@ -24,6 +24,7 @@ from hometrove.plugins.base import BasePlugin
 class FaceMatchPlugin(BasePlugin):
     id: str = "face.match"
     name: str = "人脸归组"
+    description: str = "将 face.detect 检测到的人脸向量归组到具体人物，自动合并相似人脸，构建人脸相册"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = ["face.detect"]

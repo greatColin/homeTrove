@@ -58,7 +58,8 @@ def _encode_text(asset: AssetLike, caption: str, t: Optional[float]) -> list[flo
 
 class EmbeddingBgeM3Plugin(BasePlugin):
     id: str = "embedding.bge_m3"
-    name: str = "语义向量（描述文本，bge-m3 占位）"
+    name: str = "语义向量（描述文本）"
+    description: str = "将 vlm.qwen3vl 输出的中文描述文本编码为语义向量（1024 维，scope=caption），用于通过描述内容搜索资产"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     # Captions come from vlm.qwen3vl; it must run (or skip) first.

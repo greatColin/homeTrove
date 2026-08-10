@@ -75,6 +75,7 @@ def _resolve_src(asset: AssetLike) -> Optional[Any]:
 class FaceDetectPlugin(BasePlugin):
     id: str = "face.detect"
     name: str = "人脸检测（InsightFace）"
+    description: str = "检测图片/视频中的人脸，返回每张人脸的边框坐标、置信度和 512 维向量"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     # ``basic.scene_detect`` keyframes are consumed opportunistically inside

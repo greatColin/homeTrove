@@ -26,6 +26,7 @@ def _plugin_dto(p, row: PluginConfig | None) -> dict[str, Any]:
     return {
         "id": p.id,
         "name": p.name,
+        "description": p.description,
         "version": p.version,
         "supported_media": sorted(p.supported_media),
         "depends_on": list(p.depends_on),

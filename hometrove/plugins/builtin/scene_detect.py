@@ -25,6 +25,7 @@ from hometrove.plugins.base import BasePlugin
 class SceneDetectPlugin(BasePlugin):
     id: str = "basic.scene_detect"
     name: str = "视频场景切分"
+    description: str = "将视频按镜头切换拆分为场景，返回每个场景的起止秒数和关键帧时间戳"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.VIDEO.value}
     depends_on: list[str] = ["basic.info"]

@@ -174,6 +174,7 @@ export interface PersonDTO {
 export interface PluginDTO {
   id: string;
   name: string;
+  description: string;
   version: string;
   supported_media: string[];
   depends_on: string[];
