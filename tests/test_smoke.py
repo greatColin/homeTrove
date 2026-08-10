@@ -1229,6 +1229,7 @@ def _add_asset_and_embedding(
     t_start: float | None = None,
     t_end: float | None = None,
     plugin_id: str = "embedding.jina_clip",
+    media_type: str = "image",
 ) -> int:
     """Insert an Asset + Embedding + vec0 copy; returns the embedding id."""
     import json
@@ -1238,7 +1239,7 @@ def _add_asset_and_embedding(
 
     s.add(Asset(
         id=asset_id, path=f"/m/a{asset_id}.png", media_root="/m",
-        content_hash=f"h{asset_id}", media_type="image",
+        content_hash=f"h{asset_id}", media_type=media_type,
         created_at=0, updated_at=0,
     ))
     row = Embedding(
@@ -3705,3 +3706,284 @@ def test_keyframes_endpoints(tmp_data_dir, tmp_path: Path):
         # Missing file -> 404.
         assert c.get("/api/assets/305/keyframes/9/9").status_code == 404
 
+
+
+# ---------------------------------------------------------------------------
+# v1 Chinese captions: vlm.qwen3vl plugin + embedding.bge_m3 caption scope
+# ---------------------------------------------------------------------------
+
+
+def test_vlm_qwen3vl_image_mock_caption(tmp_data_dir, tmp_path: Path):
+    """An image yields one caption with t=None; mock is deterministic."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.vlm_qwen3vl import VlmQwen3vlPlugin
+
+    src = tmp_path / "photo.png"
+    _make_photo(src, 64, 48)
+    p = VlmQwen3vlPlugin()
+    asset = AssetLike(
+        id=401, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="vlm1",
+    )
+    ctx = PluginContext(asset=asset, params=p.ParamsModel())
+    res = p.run(asset, ctx)
+    assert res["status"] == "ok"
+    assert res["backend"] == "mock"
+    caps = res["captions"]
+    assert len(caps) == 1
+    assert caps[0]["t"] is None
+    assert caps[0]["caption"]
+
+    # Determinism: same asset + params -> identical caption.
+    res2 = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res2["captions"] == caps
+
+
+def test_vlm_qwen3vl_video_per_scene(tmp_data_dir, tmp_path: Path):
+    """Video captions follow scene_detect keyframes with their timestamps."""
+    import json
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.vlm_qwen3vl import VlmQwen3vlPlugin
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, w=160, h=120, frames=24)
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=402, path=str(src), media_root=str(src.parent),
+            content_hash="vlm2", media_type="video",
+            created_at=0, updated_at=0,
+        ))
+        s.add(PluginResult(
+            asset_id=402, plugin_id="basic.scene_detect", plugin_version="0.1.0",
+            status="ok",
+            result_json=json.dumps({
+                "scenes": [
+                    {"start": 0.0, "end": 0.25, "keyframe": 0.125},
+                    {"start": 0.25, "end": 0.5, "keyframe": 0.375},
+                    {"start": 0.5, "end": 0.75, "keyframe": 0.625},
+                ]
+            }),
+        ))
+        s.commit()
+
+        p = VlmQwen3vlPlugin()
+        asset = AssetLike(
+            id=402, path=str(src), media_root=str(src.parent),
+            media_type=MediaType.VIDEO.value, content_hash_prefix="vlm2",
+        )
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+
+    assert res["status"] == "ok"
+    caps = res["captions"]
+    assert len(caps) == 3
+    assert [c["t"] for c in caps] == [0.125, 0.375, 0.625]
+    for c in caps:
+        assert c["caption"]
+
+
+def test_vlm_qwen3vl_video_no_scenes_falls_back(tmp_data_dir, tmp_path: Path):
+    """A video without scene_detect output gets a single t=0.0 caption."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.vlm_qwen3vl import VlmQwen3vlPlugin
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, w=160, h=120, frames=24)
+    p = VlmQwen3vlPlugin()
+    asset = AssetLike(
+        id=403, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.VIDEO.value, content_hash_prefix="vlm3",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "ok"
+    assert len(res["captions"]) == 1
+    assert res["captions"][0]["t"] == 0.0
+
+
+def test_vlm_qwen3vl_skips_non_target_and_missing(tmp_data_dir, tmp_path: Path):
+    """Non-image/video media and missing source files are skipped, not failed."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.vlm_qwen3vl import VlmQwen3vlPlugin
+
+    p = VlmQwen3vlPlugin()
+
+    other = AssetLike(
+        id=404, path="/p/x.txt", media_root="/p",
+        media_type=MediaType.OTHER.value, content_hash_prefix="vlm4",
+    )
+    res = p.run(other, PluginContext(asset=other, params=p.ParamsModel()))
+    assert res["status"] == "skipped"
+    assert "not an image or video" in res["reason"]
+
+    missing = AssetLike(
+        id=405, path="/p/gone.png", media_root="/p",
+        media_type=MediaType.IMAGE.value, content_hash_prefix="vlm5",
+    )
+    res = p.run(missing, PluginContext(asset=missing, params=p.ParamsModel()))
+    assert res["status"] == "skipped"
+    assert "missing" in res["reason"]
+
+
+def test_vlm_qwen3vl_qwen3vl_backend_unavailable_skips(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """backend=qwen3vl with no endpoint -> skipped (no silent mock fallback)."""
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.vlm_qwen3vl import VlmQwen3vlPlugin
+
+    monkeypatch.setattr(
+        "hometrove.plugins.builtin.vlm_qwen3vl.set_qwen3vl_available", lambda v: None,
+    )
+    import hometrove.plugins.builtin.vlm_qwen3vl as mod
+    mod._HAS_QWEN3VL = False
+
+    src = tmp_path / "photo.png"
+    _make_photo(src, 32, 24)
+    p = VlmQwen3vlPlugin()
+    asset = AssetLike(
+        id=406, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="vlm6",
+    )
+    # No endpoint_url configured -> qwen3vl backend must skip.
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(backend="qwen3vl")))
+    assert res["status"] == "skipped"
+    assert "VLM unavailable" in res["reason"]
+
+
+def test_embedding_bge_m3_writes_caption_vectors(tmp_data_dir, tmp_path: Path):
+    """bge_m3 encodes vlm captions into scope=caption embeddings (idempotent)."""
+    import json
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Embedding, PluginResult
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.embedding_bge_m3 import EmbeddingBgeM3Plugin
+
+    src = tmp_path / "photo.png"
+    _make_photo(src, 32, 24)
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=407, path=str(src), media_root=str(src.parent),
+            content_hash="vlm7", media_type="image",
+            created_at=0, updated_at=0,
+        ))
+        s.add(PluginResult(
+            asset_id=407, plugin_id="vlm.qwen3vl", plugin_version="0.1.0",
+            status="ok",
+            result_json=json.dumps({
+                "captions": [
+                    {"t": None, "caption": "一张夕阳下的海边照片"},
+                    {"t": 0.5, "caption": "孩子在海边奔跑"},
+                ]
+            }),
+        ))
+        s.commit()
+
+        p = EmbeddingBgeM3Plugin()
+        asset = AssetLike(
+            id=407, path=str(src), media_root=str(src.parent),
+            media_type=MediaType.IMAGE.value, content_hash_prefix="vlm7",
+        )
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+        assert res["status"] == "ok"
+        assert res["scope"] == "caption"
+        assert res["vectors"] == 2
+
+        rows = (
+            s.query(Embedding)
+            .filter(Embedding.asset_id == 407, Embedding.plugin_id == "embedding.bge_m3")
+            .order_by(Embedding.id)
+            .all()
+        )
+        assert len(rows) == 2
+        assert rows[0].scope == "caption" and rows[0].t_start is None
+        assert rows[1].t_start == 0.5 and rows[1].t_end == 0.5
+
+        # Idempotent re-run: vectors replaced, not stacked.
+        res2 = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+        assert res2["status"] == "ok"
+        n = (
+            s.query(Embedding)
+            .filter(Embedding.asset_id == 407, Embedding.plugin_id == "embedding.bge_m3")
+            .count()
+        )
+        assert n == 2
+
+
+def test_embedding_bge_m3_skips_without_vlm_result(tmp_data_dir, tmp_path: Path):
+    """No vlm.qwen3vl result -> skipped, never writes caption vectors."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Embedding
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.embedding_bge_m3 import EmbeddingBgeM3Plugin
+
+    src = tmp_path / "photo.png"
+    _make_photo(src, 32, 24)
+    with session_scope() as s:
+        s.add(Asset(
+            id=408, path=str(src), media_root=str(src.parent),
+            content_hash="vlm8", media_type="image",
+            created_at=0, updated_at=0,
+        ))
+        s.commit()
+        p = EmbeddingBgeM3Plugin()
+        asset = AssetLike(
+            id=408, path=str(src), media_root=str(src.parent),
+            media_type=MediaType.IMAGE.value, content_hash_prefix="vlm8",
+        )
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel(), db=s))
+        s.commit()
+        assert res["status"] == "skipped"
+        assert "no vlm.qwen3vl result" in res["reason"]
+        assert (
+            s.query(Embedding).filter(Embedding.asset_id == 408).count() == 0
+        )
+
+
+def test_search_scope_caption_recall(tmp_data_dir):
+    """scope:caption limits recall to caption vectors and enables video seek."""
+    from hometrove.db import session_scope
+    from hometrove.search import search
+
+    with session_scope() as s:
+        # A caption vector whose mock vector aligns with the query.
+        q = "sunset beach"
+        qv = _encode_query_for_test(q)
+        _add_asset_and_embedding(s, 411, vec=qv, scope="caption", t_start=1.5, t_end=1.5, media_type="video")
+        # An image-scope vector for a different asset that must be excluded.
+        _add_asset_and_embedding(s, 412, vec=qv, scope="image")
+        s.commit()
+
+    res = search(_search_session(), "scope:caption " + q)
+    assert res["total"] >= 1
+    assert all(i["scope"] == "caption" for i in res["items"])
+    assert any(i["asset_id"] == 411 for i in res["items"])
+    hit = next(i for i in res["items"] if i["asset_id"] == 411)
+    assert hit["t_start"] == 1.5
+    assert hit["can_seek"] is True
+
+
+def test_search_keyword_recall_includes_vlm_captions(tmp_data_dir):
+    """VLM caption text is searched by the keyword path."""
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, PluginResult
+    from hometrove.search import search
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=413, path="/m/p.png", media_root="/m",
+            content_hash="vlm13", media_type="image",
+            created_at=0, updated_at=0,
+        ))
+        s.add(PluginResult(
+            asset_id=413, plugin_id="vlm.qwen3vl", plugin_version="0.1.0",
+            status="ok",
+            result_json='{"captions":[{"t":null,"caption":"一只橘猫在窗台晒太阳"}]}',
+        ))
+        s.commit()
+
+    res = search(_search_session(), "橘猫")
+    assert any(i["asset_id"] == 413 for i in res["items"])

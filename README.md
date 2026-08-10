@@ -132,9 +132,9 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 - [x] M1-2 `exif` 插件（纯 Python：Pillow EXIF + PyAV 视频元数据，相机/镜头/ISO/曝光/GPS；已替换 exiftool）
 - [x] M1-3 `basic.scene_detect` 视频场景切分（PySceneDetect + pyav 后端，输出场景秒范围 + keyframe）
 - [x] M1-4 `face.detect` 真实人脸（InsightFace SCRFD+ArcFace 512 维，CPU onnxruntime；图片全帧 + 视频 keyframe 抽帧去重）
-- [ ] M1-5 `vlm.qwen3vl` 中文描述（前置已就位：`PluginContext.image()/frames()/result_of()` 共享缓存 + `resolve_asset_path`）
-- [x] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec 接入，`embeddings` 表 image/scene scope；**当前 mock 向量阶段**，caption scope 待 M1-5）
-- [x] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒；**当前 mock 向量阶段**）
+- [x] M1-5 `vlm.qwen3vl` 中文描述（图片/视频场景双形态；双后端 `auto|mock|qwen3vl`：真实 VLM 走 OpenAI 兼容端点，模型缺失回退确定性 mock；输出 `{captions:[{t,caption}]}` 落 plugin_results；**caption scope 已追加**：新增 `embedding.bge_m3` 文本向量插件把描述编码为 `scope="caption"` 向量，`/api/search` 支持 `scope:caption` 前缀 + 关键词召回 + 视频 `can_seek`）
+- [x] M1-6 `embedding.jina_clip` + `embedding.bge_m3`（sqlite-vec 接入，`embeddings` 表 image/scene/caption scope；**当前 mock 向量阶段**，caption scope 随 M1-5 落地）
+- [x] M1-7 `/search` 语义搜索（双路召回 + RRF，视频跳秒；**当前 mock 向量阶段**；caption 文本与向量召回随 M1-5 落地）
 - [x] M1-8 `/albums` `/tags` `/places` 分类页（`/api/albums` CRUD + 资产添加/移除、`/api/places` exif GPS 网格聚类；前端 `/albums` `/places` 页；`/tags` `/categories` 模拟页、`/people` 已实现）
 - [x] M1-9 `/settings/plugins` 插件管理（**完整**：开关 + `params` 参数表单（按 `params_schema` 自动渲染、保存时 `ParamsModel` 校验）+ 版本展示 + 定向重跑 `POST /api/plugins/{id}/rerun`；禁用插件不入队/停驻、重启用恢复、禁用时 `shutdown()` 释放内存）
 - [x] M1-10 `asr.faster_whisper` 语音转写（PyAV 抽音频 → 16 kHz mono PCM → 双后端 `auto|mock|faster_whisper`，默认 mock 写 `asr_transcripts` 表保持数据通路，装上 `faster-whisper` 自动切真模型）；**上传插件预设**（`plugin_presets` 表含内置默认/会议/旅游+用户自定义 CRUD；`/api/upload-presets` GET/POST/DELETE；上传页选预设 → 插件 checkbox 列表回填 → 手动调整 → `POST /api/uploads/{id}/ingest?plugin_ids=` 入队；alembic 0003 新增 `asr_transcripts` 表；`/api/assets/{id}` 暴露 `transcripts[]`；`/api/search` 关键词路径支持 audio 召回 + `scope:audio` 限定；9 个新测试覆盖 mock 产出/写入/幂等/跳过/real unavailable/详情页/搜索召回/scope 过滤/置信度阈值，70 测试全绿）
@@ -217,7 +217,7 @@ HomeTrove 采用两条召回路径，**RRF 融合**：
 
 未开始。多用户、共享链接、ASR、Live Photo、RAW、GPU 转码、移动端等见 [FEATURES.md](FEATURES.md#v11-建议) 与 [FEATURES.md](FEATURES.md#v2-远期)。
 
-**下一项：跳秒播放 ✅；v1 必备已全部完成。剩余主线为 M1-5 `vlm.qwen3vl` 真实中文描述（caption scope 待其完成后追加至 embedding 管道）与真实模型替换（jina-clip-v2、faster-whisper、InsightFace 已有）。**
+**下一项：M1-5 `vlm.qwen3vl` + caption scope 已完成 ✅；剩余主线为真实模型替换（jina-clip-v2、faster-whisper、InsightFace 已有） + M1-11 鉴权落地 + v1.1/v2 功能（多用户/共享链接/Live Photo/RAW/GPU 转码）。**
 
 ---
 
