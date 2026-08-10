@@ -122,9 +122,11 @@ HomeTrove 的插件支持「mock 回退」，**刚拉取代码无需下载任何
 | `thumbnail` | 否 | 无 | Pillow + PyAV |
 | `exif` | 否 | 无 | Pillow + PyAV 元数据 |
 | `basic.scene_detect` | 否 | 无 | PySceneDetect，无额外权重 |
-| `face.detect` | **首次运行时自动下载** | InsightFace `buffalo_l` 模型包，默认缓存到 `~/.insightface/models/` | 需联网；不可用时插件 skipped |
+| `mock.faces` | 否 | 无 | M0 占位插件，生成确定性随机人脸向量；用于人脸页面演示，`face.match` 可直接消费 |
+| `face.detect` | **首次运行时自动下载** | InsightFace `buffalo_l` 模型包，默认缓存到 `~/.insightface/models/` | 需联网；不可用时跳过；输出供 `face.match` 消费 |
+| `face.match` | 否 | 无 | 读取 `face.detect`（或 `mock.faces`）的人脸向量，按余弦相似度归组为人员；无需额外模型 |
 | `asr.faster_whisper` | 安装 `faster-whisper` 后首次运行自动下载 | HuggingFace / Whisper 缓存（通常 `~/.cache/huggingface/`），默认 `small` 约 460 MB | 不安装包则走 mock 字幕 |
-| `vlm.qwen3vl` | 不下载本地模型 | 需自行部署 OpenAI 兼容服务端点（如 vLLM / Ollama 加载 Qwen3-VL），在插件参数中填写 `endpoint_url` | 默认 `auto` 模式无_endpoint 时回退 mock |
+| `vlm.qwen3vl` | 不下载本地模型 | 需自行部署 OpenAI 兼容服务端点（如 vLLM / Ollama 加载 Qwen3-VL），在插件参数中填写 `endpoint_url` | 默认 `auto` 模式无 endpoint 时回退 mock |
 | `embedding.jina_clip` | 否（当前 mock 向量） | 无 | 真实 jina-clip-v2 后续替换 |
 | `embedding.bge_m3` | 否（当前 mock 向量） | 无 | 真实 bge-m3 后续替换 |
 
