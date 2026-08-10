@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PluginDTO } from "../lib/api";
 
@@ -63,12 +63,74 @@ function paramFields(schema: Record<string, unknown>): ParamField[] {
   }));
 }
 
-function ParamEditor({
+function ParamFieldInput({
+  f,
+  value,
+  onChange,
+}: {
+  f: ParamField;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  if (f.enum) {
+    return (
+      <label className="block text-sm">
+        <span className="mb-0.5 block text-neutral-500">{f.title}</span>
+        <select
+          value={String(value ?? f.default ?? "")}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-600 dark:bg-neutral-800"
+        >
+          {f.enum.map((opt) => (
+            <option key={String(opt)} value={String(opt)}>
+              {String(opt)}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+  if (f.type === "boolean") {
+    return (
+      <label className="flex items-center justify-between gap-2 text-sm">
+        <span className="text-neutral-500">{f.title}</span>
+        <input
+          type="checkbox"
+          checked={Boolean(value ?? f.default ?? false)}
+          onChange={(e) => onChange(e.target.checked)}
+          className="h-4 w-4 accent-brand-500"
+        />
+      </label>
+    );
+  }
+  const inputType = f.type === "integer" || f.type === "number" ? "number" : "text";
+  return (
+    <label className="block text-sm">
+      <span className="mb-0.5 block text-neutral-500">{f.title}</span>
+      <input
+        type={inputType}
+        step={f.type === "number" ? "any" : undefined}
+        min={f.minimum}
+        max={f.maximum}
+        value={value === undefined ? "" : String(value)}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (f.type === "integer") onChange(raw === "" ? undefined : parseInt(raw, 10));
+          else if (f.type === "number") onChange(raw === "" ? undefined : parseFloat(raw));
+          else onChange(raw);
+        }}
+        className="w-full rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-600 dark:bg-neutral-800"
+      />
+    </label>
+  );
+}
+
+function PluginParamModal({
   plugin,
-  onSaved,
+  onClose,
 }: {
   plugin: PluginDTO;
-  onSaved: () => void;
+  onClose: () => void;
 }) {
   const qc = useQueryClient();
   const schema = (plugin.params_schema ?? {}) as Record<string, unknown>;
@@ -83,7 +145,7 @@ function ParamEditor({
       api.setPluginParams(plugin.id, plugin.enabled, v),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugins"] });
-      onSaved();
+      onClose();
     },
     onError: (e) => setError((e as Error).message),
   });
@@ -93,76 +155,101 @@ function ParamEditor({
     setError(null);
   };
 
-  if (fields.length === 0) return null;
+  // Close on ESC.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Prevent body scroll while modal is open.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  if (fields.length === 0) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+        onClick={(e) => e.target === e.currentTarget && onClose()}
+      >
+        <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-lg dark:bg-neutral-800">
+          <h3 className="text-base font-semibold">{plugin.name}</h3>
+          <p className="mt-2 text-sm text-neutral-500">该插件没有可配置参数。</p>
+          <div className="mt-4 flex justify-end">
+            <button
+              onClick={onClose}
+              className="rounded bg-neutral-100 px-3 py-1.5 text-sm font-medium hover:bg-neutral-200 dark:bg-neutral-700 dark:hover:bg-neutral-600"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="mt-3 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-800/50">
-      <p className="mb-2 text-xs font-medium text-neutral-500">参数（保存后对下次扫描 / 重跑生效）</p>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {fields.map((f) => {
-          const val = values[f.key];
-          if (f.enum) {
-            return (
-              <label key={f.key} className="block text-sm">
-                <span className="mb-0.5 block text-neutral-500">{f.title}</span>
-                <select
-                  value={String(val ?? f.default ?? "")}
-                  onChange={(e) => set(f.key, e.target.value)}
-                  className="w-full rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-600 dark:bg-neutral-800"
-                >
-                  {f.enum.map((opt) => (
-                    <option key={String(opt)} value={String(opt)}>
-                      {String(opt)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            );
-          }
-          if (f.type === "boolean") {
-            return (
-              <label key={f.key} className="flex items-center justify-between gap-2 text-sm">
-                <span className="text-neutral-500">{f.title}</span>
-                <input
-                  type="checkbox"
-                  checked={Boolean(val ?? f.default ?? false)}
-                  onChange={(e) => set(f.key, e.target.checked)}
-                  className="h-4 w-4 accent-brand-500"
-                />
-              </label>
-            );
-          }
-          const inputType =
-            f.type === "integer" || f.type === "number" ? "number" : "text";
-          return (
-            <label key={f.key} className="block text-sm">
-              <span className="mb-0.5 block text-neutral-500">{f.title}</span>
-              <input
-                type={inputType}
-                step={f.type === "number" ? "any" : undefined}
-                min={f.minimum}
-                max={f.maximum}
-                value={val === undefined ? "" : String(val)}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (f.type === "integer") set(f.key, raw === "" ? undefined : parseInt(raw, 10));
-                  else if (f.type === "number") set(f.key, raw === "" ? undefined : parseFloat(raw));
-                  else set(f.key, raw);
-                }}
-                className="w-full rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-600 dark:bg-neutral-800"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-lg dark:bg-neutral-800">
+        <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-700">
+          <div>
+            <h3 className="text-base font-semibold">{plugin.name}</h3>
+            <p className="text-xs text-neutral-400">{plugin.id}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-700"
+            aria-label="关闭"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="overflow-y-auto p-4">
+          <p className="mb-3 text-xs font-medium text-neutral-500">
+            调整插件参数。保存后对下次扫描 / 重跑生效。
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {fields.map((f) => (
+              <ParamFieldInput
+                key={f.key}
+                f={f}
+                value={values[f.key]}
+                onChange={(v) => set(f.key, v)}
               />
-            </label>
-          );
-        })}
+            ))}
+          </div>
+          {error && <p className="mt-3 text-xs text-red-500">{error}</p>}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-neutral-200 px-4 py-3 dark:border-neutral-700">
+          <button
+            onClick={onClose}
+            className="rounded border border-neutral-300 px-4 py-1.5 text-sm font-medium hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-700"
+          >
+            取消
+          </button>
+          <button
+            onClick={() => save.mutate(values)}
+            disabled={save.isPending}
+            className="rounded bg-brand-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          >
+            {save.isPending ? "保存中…" : "保存参数"}
+          </button>
+        </div>
       </div>
-      {error && <p className="mt-2 text-xs text-red-500">{error}</p>}
-      <button
-        onClick={() => save.mutate(values)}
-        disabled={save.isPending}
-        className="mt-2 rounded bg-brand-500 px-3 py-1 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-      >
-        {save.isPending ? "保存中…" : "保存参数"}
-      </button>
     </div>
   );
 }
@@ -186,8 +273,9 @@ export default function Plugins() {
     },
   });
 
-  const [editing, setEditing] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const items: PluginDTO[] = data?.items ?? [];
+  const editingPlugin = items.find((p) => p.id === editingId) ?? null;
 
   return (
     <div className="p-4 md:p-6">
@@ -197,84 +285,82 @@ export default function Plugins() {
       </p>
 
       <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-            <tr>
-              <th className="px-3 py-2">插件</th>
-              <th className="px-3 py-2">说明</th>
-              <th className="px-3 py-2">适用媒体</th>
-              <th className="px-3 py-2">版本</th>
-              <th className="px-3 py-2">开关</th>
-              <th className="px-3 py-2">操作</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-            {items.map((p) => (
-              <tr key={p.id} className="align-top">
-                <td className="px-3 py-2">
-                  <div className="font-medium">{p.name}</div>
-                  <div className="font-mono text-xs text-neutral-400">{p.id}</div>
-                </td>
-                <td className="px-3 py-2 text-neutral-500">
-                  {p.description && (
-                    <span className="block text-xs leading-relaxed">{p.description}</span>
-                  )}
-                  {p.depends_on.length > 0 && (
-                    <span className="mt-0.5 block text-xs text-neutral-400">
-                      依赖：{p.depends_on.join(", ")}
-                    </span>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-xs text-neutral-500">
-                  {p.supported_media.length > 0
-                    ? p.supported_media.map(mediaLabel).join(" / ")
-                    : "–"}
-                </td>
-                <td className="px-3 py-2 font-mono text-xs text-neutral-500">{p.version}</td>
-                <td className="px-3 py-2">
-                  <Toggle
-                    enabled={p.enabled}
-                    pending={toggle.isPending}
-                    onChange={() => toggle.mutate({ id: p.id, enabled: !p.enabled })}
-                  />
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex flex-col gap-1">
-                    <button
-                      onClick={() => setEditing(editing === p.id ? null : p.id)}
-                      className="rounded border border-neutral-300 px-2 py-0.5 text-xs hover:bg-neutral-100 dark:border-neutral-600 dark:hover:bg-neutral-800"
-                    >
-                      {editing === p.id ? "收起参数" : "参数"}
-                    </button>
-                    <button
-                      onClick={() => rerun.mutate(p.id)}
-                      disabled={!p.enabled || rerun.isPending}
-                      className="rounded border border-amber-300 px-2 py-0.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950"
-                    >
-                      重跑
-                    </button>
-                  </div>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead className="bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+              <tr>
+                <th className="px-3 py-2">插件</th>
+                <th className="px-3 py-2">说明</th>
+                <th className="px-3 py-2">适用媒体</th>
+                <th className="px-3 py-2">版本</th>
+                <th className="px-3 py-2">开关</th>
+                <th className="px-3 py-2">操作</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+              {items.map((p) => (
+                <tr key={p.id} className="align-top">
+                  <td className="px-3 py-2">
+                    <div className="font-medium">{p.name}</div>
+                    <div className="font-mono text-xs text-neutral-400">{p.id}</div>
+                  </td>
+                  <td className="px-3 py-2 text-neutral-500">
+                    {p.description && (
+                      <span className="block text-xs leading-relaxed">{p.description}</span>
+                    )}
+                    {p.depends_on.length > 0 && (
+                      <span className="mt-0.5 block text-xs text-neutral-400">
+                        依赖：{p.depends_on.join(", ")}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-neutral-500">
+                    {p.supported_media.length > 0
+                      ? p.supported_media.map(mediaLabel).join(" / ")
+                      : "–"}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-xs text-neutral-500">{p.version}</td>
+                  <td className="px-3 py-2">
+                    <Toggle
+                      enabled={p.enabled}
+                      pending={toggle.isPending}
+                      onChange={() => toggle.mutate({ id: p.id, enabled: !p.enabled })}
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-col gap-1">
+                      <button
+                        onClick={() => setEditingId(p.id)}
+                        className="rounded border border-neutral-300 px-2 py-0.5 text-xs hover:bg-neutral-100 dark:border-neutral-600 dark:hover:bg-neutral-800"
+                      >
+                        设置参数
+                      </button>
+                      <button
+                        onClick={() => rerun.mutate(p.id)}
+                        disabled={!p.enabled || rerun.isPending}
+                        className="rounded border border-amber-300 px-2 py-0.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950"
+                      >
+                        重跑
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {items.length === 0 && (
           <p className="p-6 text-center text-neutral-400">暂无插件</p>
         )}
       </div>
 
-      {items
-        .filter((p) => editing === p.id)
-        .map((p) => (
-          <div key={p.id} className="px-1">
-            <ParamEditor plugin={p} onSaved={() => setEditing(null)} />
-          </div>
-        ))}
-
       <p className="mt-2 text-xs text-neutral-400">
         调整参数后点击「重跑」可对全库重新应用；重新开启插件后，可在「索引任务」页对未完成的文件手动重跑。
       </p>
+
+      {editingPlugin && (
+        <PluginParamModal plugin={editingPlugin} onClose={() => setEditingId(null)} />
+      )}
     </div>
   );
 }
