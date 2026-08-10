@@ -32,7 +32,7 @@ from hometrove.plugins.api import MediaType
 from hometrove.vector import VECTOR_DIM, get_index
 
 # Keyword recall: plugin results whose ``result_json`` is searched with LIKE.
-_KEYWORD_PLUGINS = ("mock.tags", "mock.category", "exif", "basic.info")
+_KEYWORD_PLUGINS = ("mock.tags", "mock.category", "exif", "basic.info", "vlm.qwen3vl")
 
 # RRF: 1 / (k + rank). ``k`` is the standard 60.
 _RRF_K = 60.0
@@ -210,7 +210,7 @@ def search(
 ) -> dict[str, Any]:
     """Run hybrid search and return results in the API shape."""
     q, scope = _strip_scope(query)
-    if scope not in (None, "image", "scene", "audio"):
+    if scope not in (None, "image", "scene", "caption", "audio"):
         # Unknown scope: degrade to a plain keyword search rather than 400.
         scope = None
     if not q:
@@ -218,7 +218,7 @@ def search(
 
     candidates: list[list[tuple[SearchHit, int]]] = []
     candidates.append(_vector_recall(session, _encode_query(q), scope))
-    if scope in (None, "image", "scene", "audio"):
+    if scope in (None, "image", "scene", "caption", "audio"):
         # Keyword recall is scope-agnostic (matches tags / exif text); skip it
         # when the caller pinned a scene/image scope so text fields don't leak
         # out-of-scope results. ``audio`` is included so transcript hits can
