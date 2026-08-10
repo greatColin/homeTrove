@@ -15,18 +15,123 @@ HomeTrove（家藏）是一个跑在你自己 NAS 上的家庭影像（照片 + 
 
 1. [为什么做这个](#1-为什么做这个)
 2. [核心特性](#2-核心特性)
-3. [当前进度](#3-当前进度)
-4. [与同类项目对比](#4-与同类项目对比)
-5. [页面与交互设计](#5-页面与交互设计)
-6. [技术架构](#6-技术架构)
-7. [技术选型](#7-技术选型)
-8. [插件系统](#8-插件系统)
-9. [索引进度与估算](#9-索引进度与估算)
-10. [数据模型概览](#10-数据模型概览)
-11. [部署形态](#11-部署形态)
-12. [待决策事项](#12-待决策事项)
-13. [参与贡献](#13-参与贡献)
-14. [License](#14-license)
+3. [首次启动指南](#首次启动指南)
+4. [当前进度](#3-当前进度)
+5. [与同类项目对比](#4-与同类项目对比)
+6. [页面与交互设计](#5-页面与交互设计)
+7. [技术架构](#6-技术架构)
+8. [技术选型](#7-技术选型)
+9. [插件系统](#8-插件系统)
+10. [索引进度与估算](#9-索引进度与估算)
+11. [数据模型概览](#10-数据模型概览)
+12. [部署形态](#11-部署形态)
+13. [待决策事项](#12-待决策事项)
+14. [参与贡献](#13-参与贡献)
+15. [License](#14-license)
+
+---
+
+## 首次启动指南
+
+> 完整部署文档见 [`docs/INSTALL.md`](docs/INSTALL.md)，本节是「克隆后 5 分钟跑起来」的最小路径。
+
+### 前置环境
+
+- **Python 3.12+**
+- 一个包含照片 / 视频的目录（下称 `MEDIA_DIR`）
+- （可选）Node.js 20+：只有修改前端时才需要；仓库已提交 `web/dist` 构建产物，直接运行后端即可使用 Web UI
+
+### 1. 安装
+
+```bash
+# 克隆仓库
+git clone <repo-url>
+cd hometrove
+
+# 安装 Python 包（推荐源码 editable 模式）
+pip install -e .
+```
+
+### 2. 配置环境变量
+
+| 变量 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `HOMETROVE_MEDIA_ROOTS` | 是 | 空 | 媒体根目录，多个用 `\|` 分隔，如 `/mnt/photos\|/mnt/videos` |
+| `HOMETROVE_DATA_DIR` | 否 | `./var` | 数据库、上传暂存、缩略图等数据目录 |
+| `HOMETROVE_READ_ONLY_CHECK` | 否 | `warn` | 媒体根只读校验：`warn`（可写时告警）/ `off`（跳过）；生产建议只读挂载 |
+| `HOMETROVE_LOG_LEVEL` | 否 | `INFO` | 日志级别 |
+
+示例：
+
+```bash
+export HOMETROVE_MEDIA_ROOTS=/mnt/photos
+export HOMETROVE_DATA_DIR=/var/lib/hometrove
+```
+
+### 3. 启动服务
+
+```bash
+hometrove serve
+```
+
+`hometrove serve` 在一个 Python 进程内同时启动：
+
+- API Server（`http://127.0.0.1:8080`）
+- Worker（后台消费索引任务）
+
+首次启动会自动创建 SQLite 数据库 schema。后续代码更新后执行：
+
+```bash
+hometrove migrate
+```
+
+### 4. 执行首次扫描
+
+启动后媒体目录不会自动入库，需要手动触发：
+
+```bash
+hometrove scan
+```
+
+Worker 会依次运行已启用插件。扫描进度在 Web 端 `http://127.0.0.1:8080/jobs` 实时展示。
+
+### 5. 访问 Web
+
+浏览器打开：
+
+```
+http://127.0.0.1:8080
+```
+
+主要页面：
+
+- `/timeline`：时间轴浏览
+- `/folders`：原始目录树
+- `/search`：语义 / 关键词搜索
+- `/albums`、`/places`、`/persons`：相册、地点、人物
+- `/settings/plugins`：插件开关、参数与定向重跑
+- `/jobs`：索引进度与失败重试
+
+### 6. 模型下载说明
+
+HomeTrove 的插件支持「mock 回退」，**刚拉取代码无需下载任何模型即可完整运行**（数据通路可观察，但识别结果是确定性模拟数据）。真实模型按需启用：
+
+| 插件 | 是否需要下载模型 | 下载方式 / 位置 | 说明 |
+|---|---|---|---|
+| `basic.info` | 否 | 无 | 纯 Python 读取元数据 |
+| `thumbnail` | 否 | 无 | Pillow + PyAV |
+| `exif` | 否 | 无 | Pillow + PyAV 元数据 |
+| `basic.scene_detect` | 否 | 无 | PySceneDetect，无额外权重 |
+| `face.detect` | **首次运行时自动下载** | InsightFace `buffalo_l` 模型包，默认缓存到 `~/.insightface/models/` | 需联网；不可用时插件 skipped |
+| `asr.faster_whisper` | 安装 `faster-whisper` 后首次运行自动下载 | HuggingFace / Whisper 缓存（通常 `~/.cache/huggingface/`），默认 `small` 约 460 MB | 不安装包则走 mock 字幕 |
+| `vlm.qwen3vl` | 不下载本地模型 | 需自行部署 OpenAI 兼容服务端点（如 vLLM / Ollama 加载 Qwen3-VL），在插件参数中填写 `endpoint_url` | 默认 `auto` 模式无_endpoint 时回退 mock |
+| `embedding.jina_clip` | 否（当前 mock 向量） | 无 | 真实 jina-clip-v2 后续替换 |
+| `embedding.bge_m3` | 否（当前 mock 向量） | 无 | 真实 bge-m3 后续替换 |
+
+> 生产环境若要用真实 AI 能力，目前只需：
+> 1. 确保 `face.detect` 能联网下载 `buffalo_l`；
+> 2. `pip install faster-whisper` 并预留约 500 MB 模型缓存空间；
+> 3. 部署 Qwen3-VL 端点并配置 `vlm.qwen3vl` 的 `endpoint_url`。
 
 ---
 
