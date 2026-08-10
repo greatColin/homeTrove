@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type PluginDTO } from "../lib/api";
+import { api, type PluginDTO, type RerunCandidate } from "../lib/api";
 
 const MEDIA_LABELS: Record<string, string> = {
   image: "图片",
@@ -262,20 +262,13 @@ export default function Plugins() {
       api.setPluginEnabled(id, enabled),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["plugins"] }),
   });
-  const rerun = useMutation({
-    mutationFn: async (id: string) => api.rerunPlugin(id),
-    onSuccess: (data, id) => {
-      qc.invalidateQueries({ queryKey: ["plugins"] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
-      alert(
-        `「${id}」重跑完成：丢弃 ${data.dropped} 条已完成/失败任务，入队 ${data.enqueued} 条。可在「索引任务」页查看进度。`,
-      );
-    },
-  });
+
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [rerunningId, setRerunningId] = useState<string | null>(null);
   const items: PluginDTO[] = data?.items ?? [];
   const editingPlugin = items.find((p) => p.id === editingId) ?? null;
+  const rerunningPlugin = items.find((p) => p.id === rerunningId) ?? null;
 
   return (
     <div className="p-4 md:p-6">
@@ -336,8 +329,8 @@ export default function Plugins() {
                         设置参数
                       </button>
                       <button
-                        onClick={() => rerun.mutate(p.id)}
-                        disabled={!p.enabled || rerun.isPending}
+                        onClick={() => setRerunningId(p.id)}
+                        disabled={!p.enabled}
                         className="rounded border border-amber-300 px-2 py-0.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950"
                       >
                         重跑
@@ -361,6 +354,277 @@ export default function Plugins() {
       {editingPlugin && (
         <PluginParamModal plugin={editingPlugin} onClose={() => setEditingId(null)} />
       )}
+      {rerunningPlugin && (
+        <RerunScopeModal plugin={rerunningPlugin} onClose={() => setRerunningId(null)} />
+      )}
+    </div>
+  );
+}
+
+function useDebouncedValue<T>(value: T, delay = 200): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return v;
+}
+
+function RerunScopeModal({
+  plugin,
+  onClose,
+}: {
+  plugin: PluginDTO;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [mode, setMode] = useState<"all" | "selected">("selected");
+  const [q, setQ] = useState("");
+  const debouncedQ = useDebouncedValue(q, 250);
+  const [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [candidates, setCandidates] = useState<RerunCandidate[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const limit = 50;
+
+  const fetchCandidates = async (query: string, off: number, append: boolean) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.rerunCandidates(plugin.id, query, off, limit);
+      setTotal(res.total);
+      setCandidates((prev) => (append ? [...prev, ...res.items] : res.items));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (mode !== "selected") return;
+    setOffset(0);
+    void fetchCandidates(debouncedQ, 0, false);
+  }, [debouncedQ, mode, plugin.id]);
+
+  useEffect(() => {
+    if (mode !== "all") return;
+    setOffset(0);
+    void fetchCandidates("", 0, false);
+  }, [mode, plugin.id]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  const toggleOne = (id: number) => {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = () => {
+    const visible = new Set(candidates.map((c) => c.asset_id));
+    const allSelected = [...visible].every((id) => selected.has(id));
+    setSelected((s) => {
+      const next = new Set(s);
+      if (allSelected) {
+        visible.forEach((id) => next.delete(id));
+      } else {
+        visible.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const selectedCount = mode === "all" ? total : selected.size;
+
+  const rerun = useMutation({
+    mutationFn: () =>
+      mode === "all"
+        ? api.rerunPlugin(plugin.id)
+        : api.rerunSelected(plugin.id, Array.from(selected)),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["plugins"] });
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      onClose();
+      alert(
+        `「${plugin.id}」重跑完成：丢弃 ${data.dropped} 条已完成/失败任务，入队 ${data.enqueued} 条。可在「索引任务」页查看进度。`,
+      );
+    },
+    onError: (e) => setError((e as Error).message),
+  });
+
+  const mediaHint = useMemo(() => {
+    if (plugin.supported_media.length === 0) return "";
+    return `（仅 ${plugin.supported_media.map(mediaLabel).join(" / ")}）`;
+  }, [plugin.supported_media]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 sm:items-center sm:p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="flex h-[90vh] w-full flex-col rounded-t-lg bg-white shadow-lg sm:h-auto sm:max-h-[85vh] sm:max-w-2xl sm:rounded-lg dark:bg-neutral-800">
+        <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-700">
+          <div>
+            <h3 className="text-base font-semibold">重跑：{plugin.name}</h3>
+            <p className="text-xs text-neutral-400">{plugin.id}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-700"
+            aria-label="关闭"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-700">
+          <button
+            onClick={() => setMode("all")}
+            className={`rounded px-3 py-1 text-sm ${
+              mode === "all"
+                ? "bg-brand-100 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-700"
+            }`}
+          >
+            全部文件{mediaHint}
+          </button>
+          <button
+            onClick={() => setMode("selected")}
+            className={`rounded px-3 py-1 text-sm ${
+              mode === "selected"
+                ? "bg-brand-100 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-700"
+            }`}
+          >
+            选择文件
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {mode === "selected" && (
+            <>
+              <div className="mb-3 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="搜索文件名或路径…"
+                  className="flex-1 rounded border border-neutral-300 bg-white px-3 py-1.5 text-sm dark:border-neutral-600 dark:bg-neutral-800"
+                />
+                <button
+                  onClick={toggleAllVisible}
+                  disabled={candidates.length === 0}
+                  className="rounded border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-40 dark:border-neutral-600 dark:hover:bg-neutral-700"
+                >
+                  全选/取消
+                </button>
+              </div>
+
+              {loading && candidates.length === 0 && (
+                <p className="py-4 text-center text-sm text-neutral-400">加载中…</p>
+              )}
+
+              <div className="space-y-1">
+                {candidates.map((c) => (
+                  <label
+                    key={c.asset_id}
+                    className="flex cursor-pointer items-center gap-3 rounded border border-neutral-100 p-2 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-700/50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(c.asset_id)}
+                      onChange={() => toggleOne(c.asset_id)}
+                      className="h-4 w-4 accent-brand-500"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium">{c.filename}</div>
+                      <div className="truncate text-xs text-neutral-400">{c.path}</div>
+                    </div>
+                    <span className="text-xs text-neutral-500">{mediaLabel(c.media_type)}</span>
+                  </label>
+                ))}
+              </div>
+
+              {candidates.length < total && (
+                <div className="mt-3 text-center">
+                  <button
+                    onClick={() => {
+                      const next = offset + limit;
+                      setOffset(next);
+                      void fetchCandidates(debouncedQ, next, true);
+                    }}
+                    disabled={loading}
+                    className="rounded border border-neutral-300 px-4 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-600 dark:hover:bg-neutral-700"
+                  >
+                    {loading ? "加载中…" : `加载更多 (${candidates.length}/${total})`}
+                  </button>
+                </div>
+              )}
+
+              {candidates.length === 0 && !loading && (
+                <p className="py-6 text-center text-sm text-neutral-400">未找到匹配文件</p>
+              )}
+            </>
+          )}
+
+          {mode === "all" && (
+            <div className="py-6 text-center">
+              <p className="text-sm text-neutral-500">
+                将对全库符合条件的文件重新入队{mediaHint}。
+              </p>
+              <p className="mt-2 text-2xl font-semibold">{total}</p>
+              <p className="text-xs text-neutral-400">个文件将被重跑</p>
+              {loading && <p className="mt-2 text-xs text-neutral-400">统计中…</p>}
+            </div>
+          )}
+
+          {error && <p className="mt-3 text-xs text-red-500">{error}</p>}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-neutral-200 px-4 py-3 dark:border-neutral-700">
+          <span className="text-sm text-neutral-500">
+            已选 <span className="font-semibold text-neutral-700 dark:text-neutral-200">{selectedCount}</span> 个文件
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="rounded border border-neutral-300 px-4 py-1.5 text-sm font-medium hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-700"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => rerun.mutate()}
+              disabled={rerun.isPending || selectedCount === 0}
+              className="rounded bg-amber-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+            >
+              {rerun.isPending ? "提交中…" : "确认重跑"}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

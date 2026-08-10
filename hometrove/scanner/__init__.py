@@ -114,6 +114,7 @@ def upsert_assets(
         # delimiter to combine root + rel. We *never* pass ``key`` to any
         # filesystem API directly — plugins reconstruct paths by splitting.
         key = f"{d.root}\0{d.rel_path}"
+        filename = d.rel_path.split("/")[-1] or d.rel_path
         existing = session.execute(
             select(Asset).where(Asset.path == key)
         ).scalar_one_or_none()
@@ -122,12 +123,14 @@ def upsert_assets(
             existing.media_type = d.media_type
             existing.size_bytes = d.size_bytes
             existing.mtime = d.mtime
+            existing.filename = filename
             existing.updated_at = now
             skipped += 1
         else:
             session.add(
                 Asset(
                     path=key,
+                    filename=filename,
                     media_root=str(d.root),
                     content_hash=d.content_hash_prefix,
                     media_type=d.media_type,
@@ -158,13 +161,22 @@ def enqueue_basic_info(session: Session) -> int:
     return enqueue_pending(session, plugin_ids=["basic.info"])
 
 
-def enqueue_pending(session: Session, plugin_ids: list[str] | None = None) -> int:
+def enqueue_pending(
+    session: Session,
+    plugin_ids: list[str] | None = None,
+    asset_ids: list[int] | None = None,
+    media_types: list[str] | None = None,
+) -> int:
     """Enqueue every *enabled* plugin for assets missing a successful result.
 
     Idempotent per (asset, plugin): a plugin whose result already exists with
     status ``ok`` is skipped, and a live (pending/running) job is not
     duplicated. Plugins disabled via ``plugin_config.enabled=0`` are skipped
     entirely — their jobs are neither created nor requeued here.
+
+    ``asset_ids`` restricts the enqueue to a specific set of assets.
+    ``media_types`` filters assets by their media type; useful when a caller
+    wants to respect a plugin's supported media set.
     """
     from hometrove.models import PluginConfig
     from hometrove.plugins.api import AssetLike
@@ -194,17 +206,21 @@ def enqueue_pending(session: Session, plugin_ids: list[str] | None = None) -> in
         except Exception:  # noqa: BLE001
             est_cost = 0.02
 
-        asset_ids = session.execute(
-            select(Asset.id).where(
-                ~exists().where(
-                    (Job.asset_id == Asset.id)
-                    & (Job.plugin_id == plugin.id)
-                    & (Job.state == "done")
-                )
+        stmt = select(Asset.id).where(
+            ~exists().where(
+                (Job.asset_id == Asset.id)
+                & (Job.plugin_id == plugin.id)
+                & (Job.state == "done")
             )
-        ).scalars().all()
+        )
+        if asset_ids is not None:
+            stmt = stmt.where(Asset.id.in_(asset_ids))
+        if media_types is not None:
+            stmt = stmt.where(Asset.media_type.in_(media_types))
 
-        for asset_id in asset_ids:
+        ids = session.execute(stmt).scalars().all()
+
+        for asset_id in ids:
             live = session.execute(
                 select(Job.id).where(
                     Job.asset_id == asset_id,

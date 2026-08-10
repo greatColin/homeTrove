@@ -25,6 +25,7 @@ class Asset(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     path: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    filename: Mapped[str] = mapped_column(Text, nullable=False, default="")
     media_root: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     media_type: Mapped[str] = mapped_column(Text, nullable=False)

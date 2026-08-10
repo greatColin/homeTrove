@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import delete
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from hometrove.db import get_db
-from hometrove.models import Job, PluginConfig
+from hometrove.models import Asset, Job, PluginConfig
 from hometrove.plugins.registry import REGISTRY
 from hometrove.scanner import enqueue_pending
 
@@ -120,4 +120,102 @@ def rerun_plugin(plugin_id: str, session: Session = Depends(get_db)):
         )
     ).rowcount
     enqueued = enqueue_pending(session, plugin_ids=[plugin_id])
+    return {"ok": True, "dropped": dropped, "enqueued": enqueued}
+
+
+class RerunCandidatesResponse(BaseModel):
+    items: list[dict[str, Any]]
+    total: int
+
+
+@router.get("/plugins/{plugin_id}/rerun-candidates", response_model=RerunCandidatesResponse)
+def list_rerun_candidates(
+    plugin_id: str,
+    q: str | None = Query(None, description="Filename or path substring"),
+    media_type: str | None = Query(None, description="Filter by media type"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    session: Session = Depends(get_db),
+):
+    """List assets that can be rerun for a plugin.
+
+    Results are filtered by the plugin's supported media types unless an
+    explicit ``media_type`` is provided.
+    """
+    plugin = REGISTRY.get(plugin_id) if plugin_id in {
+        p.id for p in REGISTRY.list()
+    } else None
+    if plugin is None:
+        raise HTTPException(404, "unknown plugin")
+
+    media_types = [media_type] if media_type else sorted(plugin.supported_media)
+    if not media_types:
+        return {"items": [], "total": 0}
+
+    conds = [Asset.media_type.in_(media_types), Asset.deleted_at.is_(None)]
+    if q:
+        pattern = f"%{q}%"
+        conds.append(or_(Asset.filename.ilike(pattern), Asset.path.ilike(pattern)))
+
+    total = session.scalar(select(func.count(Asset.id)).where(*conds)) or 0
+    rows = session.execute(
+        select(Asset.id, Asset.filename, Asset.path, Asset.media_type)
+        .where(*conds)
+        .order_by(Asset.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    items = [
+        {
+            "asset_id": r.id,
+            "filename": r.filename,
+            "path": r.path,
+            "media_type": r.media_type,
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": total}
+
+
+class RerunSelectedRequest(BaseModel):
+    asset_ids: list[int]
+
+
+@router.post("/plugins/{plugin_id}/rerun-selected")
+def rerun_selected(
+    plugin_id: str,
+    body: RerunSelectedRequest,
+    session: Session = Depends(get_db),
+):
+    """Drop done/failed jobs for the given plugin and re-enqueue selected assets."""
+    plugin = REGISTRY.get(plugin_id) if plugin_id in {
+        p.id for p in REGISTRY.list()
+    } else None
+    if plugin is None:
+        raise HTTPException(404, "unknown plugin")
+
+    row = session.get(PluginConfig, plugin_id)
+    if row is not None and not row.enabled:
+        raise HTTPException(400, "plugin is disabled — enable it before rerunning")
+
+    if not body.asset_ids:
+        return {"ok": True, "dropped": 0, "enqueued": 0}
+
+    # Drop only done/failed jobs for the selected assets so pending/running
+    # work is not duplicated.
+    dropped = session.execute(
+        delete(Job).where(
+            Job.plugin_id == plugin_id,
+            Job.asset_id.in_(body.asset_ids),
+            Job.state.in_(["done", "failed"]),
+        )
+    ).rowcount
+
+    enqueued = enqueue_pending(
+        session,
+        plugin_ids=[plugin_id],
+        asset_ids=body.asset_ids,
+        media_types=sorted(plugin.supported_media) or None,
+    )
     return {"ok": True, "dropped": dropped, "enqueued": enqueued}

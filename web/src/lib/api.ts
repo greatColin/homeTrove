@@ -183,6 +183,18 @@ export interface PluginDTO {
   params_schema: Record<string, unknown>;
 }
 
+export interface RerunCandidate {
+  asset_id: number;
+  filename: string;
+  path: string;
+  media_type: string;
+}
+
+export interface RerunCandidatesResponse {
+  items: RerunCandidate[];
+  total: number;
+}
+
 export interface AlbumDTO {
   id: number;
   name: string;
@@ -363,6 +375,21 @@ export const api = {
     request<{ ok: boolean; dropped: number; enqueued: number }>(
       `/plugins/${encodeURIComponent(id)}/rerun`,
       { method: "POST" },
+    ),
+  rerunCandidates: (id: string, q: string = "", offset = 0, limit = 50) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (q) params.set("q", q);
+    return request<RerunCandidatesResponse>(
+      `/plugins/${encodeURIComponent(id)}/rerun-candidates?${params.toString()}`,
+    );
+  },
+  rerunSelected: (id: string, assetIds: number[]) =>
+    request<{ ok: boolean; dropped: number; enqueued: number }>(
+      `/plugins/${encodeURIComponent(id)}/rerun-selected`,
+      {
+        method: "POST",
+        body: JSON.stringify({ asset_ids: assetIds }),
+      },
     ),
   search: (q: string, limit = 40) =>
     request<SearchResponse>(`/search?${new URLSearchParams({ q, limit: String(limit) })}`),

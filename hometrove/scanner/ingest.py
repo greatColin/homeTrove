@@ -42,13 +42,16 @@ def ingest_file(session: Session, src: Path, plugin_ids: list[str] | None = None
     # HomeTrove, hence no extra media_root layer. The "staging/" prefix
     # makes the origin obvious to operators.
     key = f"uploads\0{src.resolve()}"
+    filename = src.name
     existing = session.query(Asset).filter(Asset.path == key).one_or_none()
     if existing is not None:
         asset = existing
+        asset.filename = filename
     else:
         now = int(time.time())
         asset = Asset(
             path=key,
+            filename=filename,
             media_root=str(src.parent),
             content_hash=h,
             media_type=media_type,

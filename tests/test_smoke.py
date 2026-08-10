@@ -1622,6 +1622,63 @@ def test_plugin_rerun_blocked_when_disabled(tmp_data_dir):
         assert r.status_code == 400
 
 
+def test_plugin_rerun_candidates_filters_by_media_type_and_search(tmp_data_dir, tmp_path: Path):
+    """GET /api/plugins/{id}/rerun-candidates respects supported_media and q."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    n = _seed_library(tmp_data_dir, tmp_path, n=3)
+    app = create_app()
+    with TestClient(app) as c:
+        # basic.info supports image: should return all images.
+        r = c.get("/api/plugins/basic.info/rerun-candidates")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == n
+        assert len(body["items"]) == n
+        assert all(i["media_type"] == "image" for i in body["items"])
+
+        # Searching by filename should narrow results.
+        r = c.get("/api/plugins/basic.info/rerun-candidates", params={"q": "img1"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        assert body["items"][0]["filename"] == "img1.png"
+
+        # A video-only plugin should return zero candidates from an image-only library.
+        r = c.get("/api/plugins/asr.faster_whisper/rerun-candidates")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 0
+
+
+def test_plugin_rerun_selected_requeues_subset(tmp_data_dir, tmp_path: Path):
+    """POST /api/plugins/{id}/rerun-selected only affects chosen assets."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset, Job
+
+    n = _seed_library(tmp_data_dir, tmp_path, n=3)
+    with session_scope() as s:
+        asset_ids = [a.id for a in s.execute(select(Asset).order_by(Asset.id)).scalars().all()]
+
+    app = create_app()
+    with TestClient(app) as c:
+        selected = asset_ids[:2]
+        r = c.post("/api/plugins/basic.info/rerun-selected", json={"asset_ids": selected})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["dropped"] == len(selected)
+        assert body["enqueued"] == len(selected)
+
+    with session_scope() as s:
+        pending = s.query(Job).filter(Job.plugin_id == "basic.info", Job.state == "pending").count()
+        assert pending == len(selected)
+        done = s.query(Job).filter(Job.plugin_id == "basic.info", Job.state == "done").count()
+        assert done == n - len(selected)
+
+
 def test_upload_preset_crud(tmp_data_dir):
     """Built-in presets seeded; user can create/delete non-builtin presets."""
     from fastapi.testclient import TestClient
