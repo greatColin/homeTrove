@@ -150,7 +150,7 @@ def _read_image_dimensions(path: Path) -> tuple[int | None, int | None]:
 class BasicInfoPlugin(BasePlugin):
     id: str = "basic.info"
     name: str = "基本信息"
-    description: str = "提取图片/视频基本信息：文件名、媒体类型、文件大小、尺寸/时长、内容哈希前缀（M0 唯一必须插件）"
+    description: str = "读取图片/视频基础元数据：文件名、媒体类型、文件大小、内容哈希前缀；图片输出宽/高，视频输出宽/高/时长"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = []

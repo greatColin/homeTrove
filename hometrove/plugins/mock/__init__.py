@@ -78,7 +78,7 @@ def _identity_embedding(identity: int, seed: int) -> list[float]:
 class MockTagsPlugin(BasePlugin):
     id: str = "mock.tags"
     name: str = "标签（模拟）"
-    description: str = "（模拟占位）生成随机标签用于前端标签页展示；真实标签由 vlm.qwen3vl 等插件提供"
+    description: str = "（模拟占位）为图片/视频生成随机标签，用于前端标签页演示；真实标签由 vlm.qwen3vl 提供"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = ["basic.info"]
@@ -98,7 +98,7 @@ class MockTagsPlugin(BasePlugin):
 class MockCategoryPlugin(BasePlugin):
     id: str = "mock.category"
     name: str = "分类（模拟）"
-    description: str = "（模拟占位）生成随机分类（主类/子类）用于前端分类页展示；真实分类由 AI 模型提供"
+    description: str = "（模拟占位）为图片/视频生成随机分类，用于前端分类页演示；真实分类由 AI 模型提供"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = ["basic.info"]
@@ -122,7 +122,7 @@ class MockCategoryPlugin(BasePlugin):
 class MockFacesPlugin(BasePlugin):
     id: str = "mock.faces"
     name: str = "人脸检测（模拟）"
-    description: str = "（模拟占位）生成随机人脸向量用于前端人脸页展示；真实人脸由 face.detect 插件提供"
+    description: str = "（模拟占位）为图片生成随机人脸向量，用于前端人脸页演示；真实人脸由 face.detect 提供"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value}
     depends_on: list[str] = ["basic.info"]

@@ -26,7 +26,7 @@ from hometrove.plugins.base import BasePlugin
 class KeyframesPlugin(BasePlugin):
     id: str = "basic.keyframes"
     name: str = "视频关键帧"
-    description: str = "按场景关键帧抽取 JPEG 图片，落地到 data_dir/keyframes/，供详情页条带展示和跳秒播放"
+    description: str = "仅处理视频：按场景切分结果抽取代表帧 JPEG，落地到磁盘供详情页条带展示和跳秒"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.VIDEO.value}
     # Scene boundaries come from scene_detect; its skipped result for a

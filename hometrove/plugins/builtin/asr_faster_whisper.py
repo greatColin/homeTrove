@@ -231,7 +231,7 @@ _COMPUTE_TYPE = "int8"
 class AsrFasterWhisperPlugin(BasePlugin):
     id: str = "asr.faster_whisper"
     name: str = "语音转写（faster-whisper）"
-    description: str = "将视频中的语音转写为带时间戳的文本字幕，写入 asr_transcripts 表，可搜索和跳转到对应片段"
+    description: str = "仅处理视频：抽取音频转写为带时间戳的字幕文本，写入 asr_transcripts 表用于搜索和跳秒"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.VIDEO.value}
     depends_on: list[str] = ["basic.info"]

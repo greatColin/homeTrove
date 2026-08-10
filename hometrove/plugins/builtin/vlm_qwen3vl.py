@@ -191,7 +191,7 @@ def set_qwen3vl_available(available: bool) -> None:
 class VlmQwen3vlPlugin(BasePlugin):
     id: str = "vlm.qwen3vl"
     name: str = "中文描述（Qwen3-VL）"
-    description: str = "为图片生成一句中文描述；为视频按场景关键帧逐场景生成带时间戳的中文描述，落地 plugin_results"
+    description: str = "图片输出一句中文描述；视频按场景输出多条带时间戳的中文描述，用于语义搜索"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     # Videos need scene boundaries before per-scene captions; scene_detect is

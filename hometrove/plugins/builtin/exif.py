@@ -56,7 +56,7 @@ _MODEL_IFD = 0x0110
 class ExifPlugin(BasePlugin):
     id: str = "exif"
     name: str = "EXIF 元数据"
-    description: str = "读取图片 EXIF（相机型号/ISO/光圈/快门/GPS 等）和视频元数据（编解码器、时长、分辨率、旋转）"
+    description: str = "读取图片 EXIF（相机型号、ISO、光圈、快门、GPS 等）和视频容器元数据（编解码器、时长、分辨率、旋转）"
     version: str = "0.2.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = ["basic.info"]

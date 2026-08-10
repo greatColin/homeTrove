@@ -84,7 +84,7 @@ def _encode_frame(asset: AssetLike, ts: float, img: Any) -> list[float]:
 class EmbeddingJinaClipPlugin(BasePlugin):
     id: str = "embedding.jina_clip"
     name: str = "语义向量（图像/场景）"
-    description: str = "计算图片/视频场景的语义向量（1024 维），用于以图搜图和语义搜索向量召回"
+    description: str = "将图片整图或视频每个场景的代表帧编码为 1024 维语义向量，用于以图搜图和语义召回"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     # Videos need scene boundaries before embedding so each scene gets its own
