@@ -27,7 +27,9 @@ HomeTrove（家藏）是一个跑在你自己 NAS 上的家庭影像（照片 + 
 12. [部署形态](#11-部署形态)
 13. [待决策事项](#12-待决策事项)
 14. [参与贡献](#13-参与贡献)
-15. [License](#14-license)
+15. [Vault 内容加密](#15-vault-内容加密)
+16. [License](#14-license)
+17. [附录：术语表](#附录术语表)
 
 ---
 
@@ -1059,6 +1061,129 @@ api service   ──►   shared SQLite ──  ◄──   gpu-worker service
 
 - 直接写实现代码（在 RFC 与代码骨架就绪之前，PR 不予评审）。
 - 任何包含模型权重上传、绕过只读保护、绕过私有 LAN 鉴权的功能改动。
+
+---
+
+## 15. Vault 内容加密
+
+Vault 是 homeTrove v2 新增的**可选**内容静态加密模块。启用后，所有媒体本体（图片、视频、音频）以 AES-256-GCM 密文形式存储；只有在用户输入 master password 解锁 vault 后才能解密访问。
+
+Vault **默认关闭**（`HOMETROVE_VAULT_ENABLED=false`）。未启用时整个系统行为与 v1 完全一致，现有用户零改动。
+
+### 15.1 快速启用
+
+```bash
+# 1. 应用数据库迁移（创建 vault_state 表 + assets 三列）
+hometrove db upgrade
+
+# 2. 开启 vault（重启服务后生效）
+export HOMETROVE_VAULT_ENABLED=true
+hometrove serve
+```
+
+首次访问 Web UI 时，页面会引导你设置 master password（最少 12 字符）。设置完成后，vault 即处于 unlocked 状态，可以正常浏览、上传、扫描。
+
+### 15.2 加密算法
+
+| 组件 | 算法/参数 |
+|---|---|
+| Key Derivation | Argon2id, m=64 MiB, t=3, p=1, 约 250ms（首次解锁） |
+| Master Key Split | HKDF-SHA256 派生 5 个 subkeys（content_enc / filename_enc / metadata_enc / hash_enc / kek） |
+| Master Key Storage | AES-Key-Wrap (RFC 3394) under kek subkey → `vault_state.wrapped_master_key` |
+| Content Encryption | AES-256-GCM, 12-byte random nonce per file, per-chunk AAD `htv1:{asset_id}:{chunk_no}` |
+| Chunk Size | 64 KiB |
+| File Format | magic(8B) + nonce(12B) + chunk(len_be64 + ct+tag) × N |
+
+### 15.3 安全运维要求
+
+Vault 的安全性依赖服务器内存中持有的 master key。以下措施是**必需**的：
+
+**关闭 swap**
+
+```bash
+# 永久关闭（编辑 /etc/sysctl.conf 或 sysctl.d/）
+swapoff -a
+# 验证
+free -h | grep Swap
+```
+
+**限制 core dump**
+
+```bash
+# 临时
+ulimit -c 0
+
+# 永久（/etc/security/limits.conf）
+* hard core 0
+* soft core 0
+```
+
+**内核内存保护（可选但推荐）**
+
+```bash
+# 启用内核.kptr_restrict（限制通过 /proc 读取内核指针）
+echo 2 > /proc/sys/kernel/kptr_restrict
+
+# 启用 kmem 禁摸（需要内核编译选项，NAS 用户通常不可用）
+echo 1 > /proc/sys/kernel/memmap_prereserve
+```
+
+**物理安全**：vault password 即数据密钥。服务器被拿走后可以直接读走磁盘内容 → 必须确保机器本身物理安全或全盘加密。
+
+### 15.4 密码丢失 = 数据永久不可恢复
+
+Vault master password **无法重置**。如果忘记密码：
+
+- `vault_state` 表中的 `wrapped_master_key` 是用 password 派生的 kek 包装过的，无法绕过。
+- 没有后门、没有密码找回、没有 migration key。
+- 正确的做法是：**重置 vault**（清空 vault_state、删除 `data/vault/`、把 `encrypted_path` 非空的 asset rows 改回 `encrypted_path=""`，从原始媒体路径恢复）。
+
+如果需要灾难恢复流程：
+
+```bash
+# 1. 停止 homeTrove
+# 2. 备份 data/ 目录
+# 3. 清空 vault 状态（示例 SQL）
+DELETE FROM vault_state;
+UPDATE assets SET encrypted_path="", encrypted_nonce=NULL WHERE encrypted_path != "";
+rm -rf $HOMETROVE_DATA_DIR/vault/
+# 4. 重启，vault 回到未启用状态
+```
+
+### 15.5 上传时加密
+
+在 vault unlocked 状态下，Web UI 上传页面会出现一个「加密存储」复选框（勾选后本次上传启用加密）。加密流程：
+
+1. 文件先写入 staging 目录（明文）
+2. finalize 时用 AES-256-GCM 加密到 `data/vault/v/<b16>/<b16>/<id>.c9r`
+3. 加密成功后立即 shred（清零覆写）staging 明文
+4. 数据库 asset row 的 `path=""`，`encrypted_path` 指向 vault 路径
+
+如果 finalize 时 vault 处于 locked 状态，加密上传会返回 423 Locked。
+
+### 15.6 Scanner 自动导入加密（可选）
+
+`HOMETROVE_VAULT_AUTO_IMPORT=true` 时，scanner 会对扫描到的媒体执行两阶段加密写入：
+
+1. 首次入库：asset 入库，`encrypted_path=""`，`origin_path` 记录原始媒体路径
+2. 扫描完成：后台任务从 `origin_path` 读取明文 → 加密到 vault → shred 明文 → 更新 `encrypted_path`
+
+加密失败时自动回退到 `origin_path`（明文），不会阻塞扫描。
+
+### 15.7 vault locked 时的行为
+
+当 vault 处于 locked 状态时：
+
+- 已加密的 asset 请求返回**占位资源**（固定的小图/静音视频/静音音频），HTTP 200，不是 401
+- 这样前端网格可以正常显示，不会因为没有输入密码而报一堆 broken image
+- 上传页面禁用加密复选框（需要先解锁 vault）
+- scanner auto-import 跳过（因为无法加密写入）
+
+### 15.8 Session 与 Cookie
+
+- Vault session 通过 cookie `hometrove_vault` 传递（HttpOnly + SameSite=Strict，7 天 TTL）
+- 进程重启后 session 失效，用户需要重新输入 password 解锁
+- 这也是安全性的一部分：服务器重启后 master key 不再留在内存中
 
 ---
 
