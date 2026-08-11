@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -47,6 +48,17 @@ class Asset(Base):
     # the existing tooling (sums / counts / indexable) handles it uniformly.
     # The default is 0 so newly ingested assets do not need a separate write.
     favorite: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # v2 content encryption (vault mode). When ``encrypted_path`` is set the
+    # asset's on-disk payload lives inside the vault directory and is an
+    # AES-256-GCM ciphertext; the column is NULL for plain assets that
+    # resolve through the existing ``path`` field. ``encrypted_nonce`` is
+    # the 12-byte nonce used by the payload header. ``origin_path`` is
+    # populated during the optional vault import phase so the original
+    # plaintext location can be retained for migration / verification.
+    encrypted_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    encrypted_nonce: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    origin_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     plugin_results: Mapped[list["PluginResult"]] = relationship(
         back_populates="asset",
@@ -364,3 +376,26 @@ class SmartAlbumRule(Base):
     __table_args__ = (
         Index("idx_smart_album_rules_album", "album_id"),
     )
+
+
+class VaultState(Base):
+    """Singleton row that stores the encrypted vault master key.
+
+    ``id`` is constrained to ``1`` by a CHECK constraint on the table so
+    the application can rely on ``session.get(VaultState, 1)`` returning
+    the only row. ``kdf_salt`` and ``kdf_params_json`` capture the
+    Argon2id parameters used to derive the KEK from the user's master
+    password; ``wrapped_master_key`` is the AES-Key-Wrap output of the
+    raw 96-byte master key under that KEK, so the table never holds
+    plaintext key material.
+    """
+
+    __tablename__ = "vault_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kdf_salt: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    kdf_params_json: Mapped[str] = mapped_column(Text, nullable=False)
+    wrapped_master_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)

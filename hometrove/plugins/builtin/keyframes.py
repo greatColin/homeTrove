@@ -49,6 +49,13 @@ class KeyframesPlugin(BasePlugin):
         if ctx.data_dir is None:
             return {"status": "skipped", "reason": "no data_dir in context"}
 
+        from hometrove.vault.state import VaultStatus, get_state
+
+        vault_state = get_state()
+        use_vault = vault_state.status == VaultStatus.UNLOCKED
+        if vault_state.status == VaultStatus.LOCKED:
+            return {"status": "skipped", "reason": "vault is locked"}
+
         src = resolve_asset_path(asset)
         if src is None:
             return {"status": "skipped", "reason": "source file missing"}
@@ -64,15 +71,41 @@ class KeyframesPlugin(BasePlugin):
         if not frames:
             return {"status": "skipped", "reason": "video decode returned no frames"}
 
-        out_dir = ctx.data_dir / "keyframes" / str(asset.id)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
         keyframes: list[dict[str, Any]] = []
         total = 0
         for (scene_idx, idx, t_sec, t_start, t_end), frame in zip(windows, frames):
             if frame is None:
                 continue
             name = f"scene-{scene_idx}-{idx}.jpg"
+            if use_vault:
+                from hometrove.vault.paths import vault_keyframe_path
+                from hometrove.vault.stream import encrypt_bytes
+
+                dest = vault_keyframe_path(ctx.data_dir, asset.id, scene_idx, idx)
+                buf = self._frame_to_jpeg_bytes(frame, params.max_side, params.quality)
+                if buf is None:
+                    continue
+                encrypt_bytes(
+                    buf,
+                    dest,
+                    key=bytes(vault_state.subkeys.content_enc_key),
+                    asset_id=asset.id,
+                )
+                keyframes.append(
+                    {
+                        "scene": scene_idx,
+                        "index": idx,
+                        "t_sec": round(t_sec, 3),
+                        "t_start": round(t_start, 3),
+                        "t_end": round(t_end, 3),
+                        "file": dest.name,
+                    }
+                )
+                total += 1
+                continue
+
+            out_dir = ctx.data_dir / "keyframes" / str(asset.id)
+            out_dir.mkdir(parents=True, exist_ok=True)
             if self._save_jpeg(frame, out_dir / name, params.max_side, params.quality):
                 keyframes.append(
                     {
@@ -92,6 +125,7 @@ class KeyframesPlugin(BasePlugin):
             "per_scene": params.per_scene,
             "total": total,
             "keyframes": keyframes,
+            "vault": use_vault,
         }
 
     # ----- helpers -----
@@ -157,6 +191,24 @@ class KeyframesPlugin(BasePlugin):
         except Exception:  # noqa: BLE001
             return False
         return dest.is_file()
+
+    def _frame_to_jpeg_bytes(self, frame: Any, max_side: int, quality: int) -> Optional[bytes]:
+        """Encode a numpy frame to JPEG bytes for vault writing."""
+
+        import io
+
+        try:
+            from PIL import Image
+
+            im = Image.fromarray(frame)
+            im.thumbnail((max_side, max_side), Image.LANCZOS)
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=quality, optimize=True)
+        except Exception:  # noqa: BLE001
+            return None
+        return buf.getvalue()
 
 
 __all__ = ["KeyframesPlugin"]

@@ -93,6 +93,13 @@ export default function Upload() {
   const [selectedPlugins, setSelectedPlugins] = useState<string[]>([]);
   const [presetName, setPresetName] = useState("");
   const [showSave, setShowSave] = useState(false);
+  const [encrypt, setEncrypt] = useState(false);
+
+  const vault = useQuery({
+    queryKey: ["vault-status"],
+    queryFn: api.vaultStatus,
+  });
+  const canEncrypt = !!vault.data?.enabled && !!vault.data?.unlocked;
 
   const plugins: PluginDTO[] = pluginsData?.items ?? [];
   const presets: UploadPresetDTO[] = presetsData?.items ?? [];
@@ -129,7 +136,7 @@ export default function Upload() {
       const session: Session = await jfetch("", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, size: file.size }),
+        body: JSON.stringify({ filename: file.name, size: file.size, encrypted: encrypt }),
       });
       const { upload_id, chunk_size } = session;
       totalChunks.current = Math.max(1, Math.ceil(file.size / chunk_size));
@@ -263,6 +270,23 @@ export default function Upload() {
 
       <div className="mt-4 max-w-lg rounded-md border border-dashed border-neutral-300 p-6 dark:border-neutral-700">
         <input ref={fileRef} type="file" className="mb-4 block w-full text-sm" />
+        {vault.data?.enabled && (
+          <label className="mb-4 flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-300">
+            <input
+              type="checkbox"
+              checked={encrypt}
+              disabled={!canEncrypt}
+              onChange={(e) => setEncrypt(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>
+              加密上传到 vault
+              {!canEncrypt && (
+                <span className="ml-2 text-xs text-amber-600">（需先解锁 vault）</span>
+              )}
+            </span>
+          </label>
+        )}
         <button
           onClick={() => upload(selectedPlugins)}
           disabled={state === "uploading" || state === "creating"}

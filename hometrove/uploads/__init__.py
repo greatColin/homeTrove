@@ -54,6 +54,7 @@ class UploadSession:
     claimed_hash: Optional[str] = None
     finalized: bool = False
     final_path: Optional[Path] = None
+    encrypted: bool = False
 
 
 class UploadManager:
@@ -83,6 +84,7 @@ class UploadManager:
                     storage_dir=storage,
                     created_at=raw["created_at"],
                     claimed_hash=raw.get("claimed_hash"),
+                    encrypted=bool(raw.get("encrypted", False)),
                 )
                 self._sessions[s.upload_id] = s
                 storage.mkdir(exist_ok=True)
@@ -92,7 +94,13 @@ class UploadManager:
 
     # ----- session lifecycle -----
 
-    def create(self, filename: str, size: int, claimed_hash: Optional[str] = None) -> UploadSession:
+    def create(
+        self,
+        filename: str,
+        size: int,
+        claimed_hash: Optional[str] = None,
+        encrypted: bool = False,
+    ) -> UploadSession:
         if size <= 0:
             raise ValueError("size must be positive")
         upload_id = uuid.uuid4().hex
@@ -106,6 +114,7 @@ class UploadManager:
             storage_dir=storage_dir,
             created_at=int(time.time()),
             claimed_hash=claimed_hash,
+            encrypted=encrypted,
         )
         self._sessions[upload_id] = session
         self._persist_meta(session)
@@ -129,6 +138,7 @@ class UploadManager:
                 storage_dir=storage,
                 created_at=raw["created_at"],
                 claimed_hash=raw.get("claimed_hash"),
+                encrypted=bool(raw.get("encrypted", False)),
             )
             self._sessions[upload_id] = s
             storage.mkdir(exist_ok=True)
@@ -248,6 +258,7 @@ class UploadManager:
                     "created_at": s.created_at,
                     "claimed_hash": s.claimed_hash,
                     "finalized": s.finalized,
+                    "encrypted": s.encrypted,
                 },
                 f,
             )
@@ -278,11 +289,21 @@ def build_router(manager: UploadManager) -> APIRouter:
 
     @r.post("", summary="Start an upload session")
     def create(body: dict = Body(...)):
+        encrypted = bool(body.get("encrypted", False))
+        if encrypted:
+            from hometrove.config import get_settings
+            from hometrove.vault.state import is_unlocked as _is_unlocked
+
+            if not get_settings().vault_enabled:
+                raise HTTPException(400, "vault is not enabled")
+            if not _is_unlocked():
+                raise HTTPException(423, "vault is locked; cannot start encrypted upload")
         try:
             s = manager.create(
                 filename=str(body["filename"]),
                 size=int(body["size"]),
                 claimed_hash=body.get("content_hash"),
+                encrypted=encrypted,
             )
         except (KeyError, ValueError) as e:
             raise HTTPException(400, str(e))
@@ -290,6 +311,7 @@ def build_router(manager: UploadManager) -> APIRouter:
             "upload_id": s.upload_id,
             "chunk_size": s.chunk_size,
             "size": s.size,
+            "encrypted": s.encrypted,
         }
 
     @r.get("/{upload_id}", summary="Inspect an upload session (used for resume)")
@@ -306,6 +328,7 @@ def build_router(manager: UploadManager) -> APIRouter:
             "created_at": s.created_at,
             "uploaded_chunks": manager.list_chunks(upload_id),
             "finalized": s.finalized,
+            "encrypted": s.encrypted,
         }
 
     @r.put("/{upload_id}/chunks/{idx}", summary="Upload one chunk (idempotent)")
@@ -354,6 +377,89 @@ def build_router(manager: UploadManager) -> APIRouter:
             raise HTTPException(404, "upload session not found")
         if not s.finalized or s.final_path is None:
             raise HTTPException(409, "upload not finalized yet")
+
+        if s.encrypted:
+            from hometrove.db import session_scope as _scope
+            from hometrove.models import Asset as _Asset
+            from hometrove.plugins.builtin.basic_info import classify as _classify
+            from hometrove.scanner import hash_prefix as _hash_prefix
+            from hometrove.vault import is_unlocked as _is_unlocked
+            from hometrove.vault.paths import allocate_content_path as _alloc
+            from hometrove.vault.state import get_state as _get_state
+            from hometrove.vault.stream import encrypt_file as _enc, shred_file as _shred
+
+            if not _is_unlocked():
+                raise HTTPException(423, "vault is locked")
+            settings = get_settings()
+            data_dir = settings.resolved_data_dir()
+            full_path, rel_path = _alloc(data_dir)
+            state = _get_state()
+            if not state.subkeys:
+                raise HTTPException(500, "vault subkeys unavailable")
+            try:
+                media_type = _classify(s.final_path).value
+                try:
+                    prefix = _hash_prefix(s.final_path, settings.hash_prefix_bytes)
+                except OSError:
+                    prefix = ""
+                # Pre-allocate the asset id by inserting then streaming the
+                # cipher to disk; the in-memory asset row is updated below.
+                with _scope() as db:
+                    now = int(time.time())
+                    asset = _Asset(
+                        path="",
+                        filename=s.filename,
+                        media_root="vault",
+                        content_hash=prefix,
+                        media_type=media_type,
+                        size_bytes=s.size,
+                        mtime=int(s.final_path.stat().st_mtime),
+                        created_at=now,
+                        updated_at=now,
+                        encrypted_path=rel_path,
+                    )
+                    db.add(asset)
+                    db.flush()
+                    asset_id = asset.id
+                    db.commit()
+                try:
+                    _enc(
+                        s.final_path,
+                        full_path,
+                        key=bytes(state.subkeys.content_enc_key),
+                        asset_id=asset_id,
+                    )
+                except Exception:
+                    # Best-effort cleanup on encryption failure.
+                    from hometrove.db import session_scope as _scope2
+                    with _scope2() as db:
+                        a = db.get(_Asset, asset_id)
+                        if a is not None:
+                            db.delete(a)
+                            db.commit()
+                    raise
+                # Shred the staging plaintext after the cipher is durable.
+                _shred(s.final_path)
+                # Drop the staged file pointer from the session so the next
+                # ingest call doesn't re-use it.
+                s.final_path = None
+                with _scope() as db:
+                    db.execute(
+                        __import__("sqlalchemy").text(
+                            "DELETE FROM upload_sessions WHERE upload_id = :u"
+                        ),
+                        {"u": upload_id},
+                    ) if False else None  # placeholder, session is in-memory only
+                # Enqueue the same plugins a plain ingest would run.
+                from hometrove.scanner import enqueue_pending as _enq
+                with _scope() as db:
+                    _enq(db, asset_ids=[asset_id])
+                return {"asset_id": asset_id, "upload_id": upload_id, "encrypted": True}
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(500, f"encrypted ingest failed: {exc}")
+
         from hometrove.db import session_scope
         with session_scope() as db:
             asset_id = ingest_file(db, s.final_path, plugin_ids=plugin_ids)

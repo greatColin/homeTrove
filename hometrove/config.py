@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     auth_cookie_name: str = "hometrove_session"
     auth_session_ttl_seconds: int = 7 * 24 * 3600
 
+    # v2 content encryption (vault mode). When ``vault_enabled`` is true
+    # the API gates encrypted-asset reads on vault unlock; the scanner
+    # additionally honours ``vault_auto_import`` to copy new files into
+    # the vault directory.  ``vault_session_ttl_seconds`` controls how
+    # long the unlock cookie persists between requests.
+    vault_enabled: bool = False
+    vault_auto_import: bool = False
+    vault_session_ttl_seconds: int = 7 * 24 * 3600
+    vault_cookie_name: str = "hometrove_vault"
+
     # M0-3: media-root read-only verification.
     # ``warn`` (default) prints one WARNING per writable root at startup;
     # ``off`` skips the probe entirely (dev / scratch mounts).

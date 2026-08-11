@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from hometrove.auth import AuthBackend, Principal
+from hometrove.config import get_settings
 
 _PRINCIPAL_KEY = "principal"
 
@@ -31,6 +32,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
     app. The middleware never raises: a backend failure (which shouldn't
     happen with the default passthrough) degrades to a local principal so
     the request still reaches a route handler that can decide what to do.
+
+    When ``vault_enabled`` is true the middleware also rehydrates the
+    in-memory vault unlock state from the ``vault_session`` cookie on
+    every request.  Failures are silent — the route handler decides
+    whether to return 401.
     """
 
     def __init__(self, app, backend: AuthBackend | None = None) -> None:
@@ -52,5 +58,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
             except Exception:  # noqa: BLE001 — degrade open, never crash middleware
                 principal = Principal.local()
         request.state.principal = principal
+
+        # Rehydrate vault unlock state from the session cookie.
+        try:
+            settings = get_settings()
+            if settings.vault_enabled:
+                cookie_name = settings.vault_cookie_name
+                token = request.cookies.get(cookie_name)
+                from hometrove.api.routes.vault import try_resume_session
+
+                try_resume_session(token)
+        except Exception:  # noqa: BLE001 — never block a request on middleware failure
+            pass
+
         response: Response = await call_next(request)
         return response

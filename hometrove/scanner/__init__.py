@@ -104,11 +104,20 @@ def upsert_assets(
     *,
     commit_batch: int = 200,
 ) -> Tuple[int, int]:
-    """Insert new assets, update existing ones, return ``(new, skipped)`` counts."""
+    """Insert new assets, update existing ones, return ``(new, skipped)`` counts.
+
+    When ``HOMETROVE_VAULT_AUTO_IMPORT=true`` and the vault is unlocked,
+    each new asset is also stream-encrypted into the vault directory.
+    The ``path`` column is rewritten to the vault-relative path; the
+    original media location is preserved in ``origin_path`` so the
+    user can still re-locate the source file.
+    """
     now = int(time.time())
     new = 0
     skipped = 0
     pending = 0
+    settings = get_settings()
+    vault_enabled = settings.vault_enabled and settings.vault_auto_import
     for d in discovered:
         # ``\0`` is illegal in Linux filesystem paths so it's a safe in-database
         # delimiter to combine root + rel. We *never* pass ``key`` to any
@@ -127,20 +136,112 @@ def upsert_assets(
             existing.updated_at = now
             skipped += 1
         else:
-            session.add(
-                Asset(
-                    path=key,
-                    filename=filename,
-                    media_root=str(d.root),
-                    content_hash=d.content_hash_prefix,
-                    media_type=d.media_type,
-                    size_bytes=d.size_bytes,
-                    mtime=d.mtime,
-                    created_at=now,
-                    updated_at=now,
+            if vault_enabled:
+                from hometrove.vault.state import VaultStatus, get_state
+
+                vault_state = get_state()
+                if vault_state.status == VaultStatus.UNLOCKED:
+                    from hometrove.vault.paths import allocate_content_path
+                    from hometrove.vault.stream import encrypt_file
+
+                    data_dir = settings.resolved_data_dir()
+                    full_path, rel_path = allocate_content_path(data_dir)
+                    try:
+                        nonce = encrypt_file(
+                            d.absolute_path,
+                            full_path,
+                            key=bytes(vault_state.subkeys.content_enc_key),
+                            asset_id=0,  # asset id assigned after insert below
+                        )
+                    except Exception as exc:  # noqa: BLE001 — fall back to plaintext reference
+                        # Encryption failed (read error, disk full, etc.).
+                        # Don't drop the asset: keep the plaintext reference
+                        # so a subsequent scanner pass can retry.
+                        from logging import getLogger
+
+                        getLogger("hometrove.scanner").warning(
+                            "vault encrypt failed for %s: %s", d.absolute_path, exc
+                        )
+                        session.add(
+                            Asset(
+                                path=key,
+                                filename=filename,
+                                media_root=str(d.root),
+                                content_hash=d.content_hash_prefix,
+                                media_type=d.media_type,
+                                size_bytes=d.size_bytes,
+                                mtime=d.mtime,
+                                created_at=now,
+                                updated_at=now,
+                            )
+                        )
+                        new += 1
+                        pending += 1
+                        if pending >= commit_batch:
+                            session.commit()
+                            pending = 0
+                        continue
+                    session.add(
+                        Asset(
+                            path=rel_path,
+                            filename=filename,
+                            media_root="vault",
+                            content_hash=d.content_hash_prefix,
+                            media_type=d.media_type,
+                            size_bytes=d.size_bytes,
+                            mtime=d.mtime,
+                            created_at=now,
+                            updated_at=now,
+                            encrypted_path=rel_path,
+                            origin_path=key,
+                        )
+                    )
+                    session.flush()
+                    asset_id = session.execute(
+                        select(Asset.id).where(Asset.path == rel_path)
+                    ).scalar_one()
+                    # Re-stream with the real asset id so the AAD matches.
+                    import os
+
+                    os.remove(full_path)
+                    encrypt_file(
+                        d.absolute_path,
+                        full_path,
+                        key=bytes(vault_state.subkeys.content_enc_key),
+                        asset_id=asset_id,
+                    )
+                    new += 1
+                else:
+                    # Vault enabled but locked — fall back to plain ref.
+                    session.add(
+                        Asset(
+                            path=key,
+                            filename=filename,
+                            media_root=str(d.root),
+                            content_hash=d.content_hash_prefix,
+                            media_type=d.media_type,
+                            size_bytes=d.size_bytes,
+                            mtime=d.mtime,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                    new += 1
+            else:
+                session.add(
+                    Asset(
+                        path=key,
+                        filename=filename,
+                        media_root=str(d.root),
+                        content_hash=d.content_hash_prefix,
+                        media_type=d.media_type,
+                        size_bytes=d.size_bytes,
+                        mtime=d.mtime,
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-            )
-            new += 1
+                new += 1
 
         pending += 1
         if pending >= commit_batch:

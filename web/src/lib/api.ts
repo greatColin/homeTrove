@@ -271,6 +271,28 @@ export interface UploadPresetDTO {
   created_at: number;
 }
 
+export interface VaultStatusDTO {
+  enabled: boolean;
+  configured: boolean;
+  unlocked: boolean;
+  total_assets: number | null;
+  encrypted_assets: number | null;
+}
+
+export const vaultStatus = () => request<VaultStatusDTO>("/vault/status");
+export const vaultSetup = (password: string, confirm: string) =>
+  request<{ ok: boolean; unlocked: boolean }>("/vault/setup", {
+    method: "POST",
+    body: JSON.stringify({ password, confirm }),
+  });
+export const vaultUnlock = (password: string) =>
+  request<{ ok: boolean; unlocked: boolean }>("/vault/unlock", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+export const vaultLock = () =>
+  request<{ ok: boolean; unlocked: boolean }>("/vault/lock", { method: "POST" });
+
 export interface AssetsFilters {
   mediaType?: string;
   favorite?: boolean;
@@ -441,6 +463,19 @@ export const api = {
     }),
   deleteUploadPreset: (id: number) =>
     request<{ ok: boolean }>(`/upload-presets/${id}`, { method: "DELETE" }),
+  vaultStatus: () => request<VaultStatusDTO>("/vault/status"),
+  vaultSetup: (password: string, confirm: string) =>
+    request<{ ok: boolean; unlocked: boolean }>("/vault/setup", {
+      method: "POST",
+      body: JSON.stringify({ password, confirm }),
+    }),
+  vaultUnlock: (password: string) =>
+    request<{ ok: boolean; unlocked: boolean }>("/vault/unlock", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+  vaultLock: () =>
+    request<{ ok: boolean; unlocked: boolean }>("/vault/lock", { method: "POST" }),
 };
 
 export function mediaLabel(t: string): string {

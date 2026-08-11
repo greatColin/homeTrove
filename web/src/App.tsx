@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 import { NavLink, Routes, Route } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import Timeline from "./routes/timeline";
 import Folders from "./routes/folders";
@@ -14,6 +14,7 @@ import Search from "./routes/search";
 import Albums from "./routes/albums";
 import Trash from "./routes/trash";
 import SharedAlbum from "./routes/shared_album";
+import VaultUnlockModal, { VaultSetupPage } from "./components/vault_modal";
 
 const Places = lazy(() => import("./routes/places"));
 
@@ -67,6 +68,28 @@ function ScanButton() {
   );
 }
 
+function VaultLockButton() {
+  const qc = useQueryClient();
+  const status = useQuery({ queryKey: ["vault-status"], queryFn: api.vaultStatus });
+  const lock = useMutation({
+    mutationFn: api.vaultLock,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["vault-status"] });
+    },
+  });
+
+  if (!status.data?.enabled || !status.data?.unlocked) return null;
+  return (
+    <button
+      onClick={() => lock.mutate()}
+      disabled={lock.isPending}
+      className="mt-2 w-full rounded-md border border-neutral-300 px-3 py-2 text-xs text-neutral-600 transition hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+    >
+      {lock.isPending ? "锁定中…" : "锁定 vault"}
+    </button>
+  );
+}
+
 function NavItems({ className }: { className: string }) {
   return (
     <>
@@ -102,6 +125,7 @@ export default function App() {
         </nav>
         <div className="mt-8">
           <ScanButton />
+          <VaultLockButton />
         </div>
       </aside>
 
@@ -143,8 +167,10 @@ export default function App() {
           <Route path="/trash" element={<Trash />} />
           <Route path="/share/:token" element={<SharedAlbum />} />
           <Route path="/asset/:id" element={<AssetDetail />} />
+          <Route path="/vault/setup" element={<VaultSetupPage />} />
         </Routes>
       </main>
+      <VaultUnlockModal />
     </div>
   );
 }

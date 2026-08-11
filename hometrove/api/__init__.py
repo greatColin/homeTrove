@@ -29,8 +29,12 @@ from hometrove.api.routes import (
     plugins,
     search,
     upload_presets,
+    vault,
 )
 from hometrove.models import PluginConfig
+from hometrove.vault import placeholders as _vault_placeholders
+from hometrove.vault.paths import vault_dir
+from hometrove.vault.state import VaultStatus, get_state, set_disabled
 
 
 def _web_dist_dir() -> Path | None:
@@ -65,6 +69,38 @@ async def lifespan(app: FastAPI):
             if row is None:
                 s.add(PluginConfig(plugin_id=p.id, enabled=1))
         s.commit()
+
+    # v2 content encryption: bootstrap vault state from settings + DB.
+    settings = get_settings()
+    if not settings.vault_enabled:
+        set_disabled()
+    else:
+        # Hydrate the in-memory cached KDF params + wrapped key so the
+        # unlock endpoint can re-derive the master key without a second
+        # DB round-trip.
+        from hometrove.vault import crypto as _vault_crypto
+        from hometrove.models import VaultState as _VaultStateRow
+
+        state = get_state()
+        if state.status == VaultStatus.DISABLED:
+            with session_scope() as s:
+                row = s.get(_VaultStateRow, 1)
+            if row is None:
+                # Fresh deployment: leave state as INITIALIZED so the
+                # client redirects to /vault/setup.
+                state.status = VaultStatus.INITIALIZED
+            else:
+                state.kdf_salt = row.kdf_salt
+                state.kdf_params = _vault_crypto.kdf_params_from_json(row.kdf_params_json)
+                state.wrapped_master_key = row.wrapped_master_key
+                state.status = VaultStatus.LOCKED
+
+        # Ensure the placeholder assets exist so the locked-asset UX is
+        # never a 404 even on a brand new install.
+        _vault_placeholders.ensure_placeholders(settings.resolved_data_dir())
+        # Create the vault root early so the worker can write into it
+        # without racing the first upload.
+        vault_dir(settings.resolved_data_dir())
     yield
 
 
@@ -104,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(albums.router)
     app.include_router(places.router)
     app.include_router(upload_presets.router)
+    app.include_router(vault.router)
     # Public share endpoints are registered last but before the SPA fallback.
     # They live inside assets.router to keep the prefix surface consistent.
 

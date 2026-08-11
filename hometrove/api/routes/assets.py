@@ -5,8 +5,8 @@ import mimetypes
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -16,6 +16,10 @@ from hometrove.db import get_db
 from hometrove.models import Album, AlbumAsset, Asset, AsrTranscript, FaceEmbedding, PluginResult
 from hometrove.smart_albums import _place_ids as _smart_place_ids
 from hometrove import trash as _trash
+from hometrove.vault.paths import vault_keyframe_path, vault_thumbnail_path
+from hometrove.vault.read import is_asset_encrypted, read_asset_stream, _resolve_plain_path
+from hometrove.vault.state import get_state, is_unlocked
+from hometrove.vault.stream import decrypt_to_bytes
 
 
 router = APIRouter(prefix="/api", tags=["assets"])
@@ -291,6 +295,19 @@ def asset_keyframe_file(
     a = session.get(Asset, asset_id)
     if a is None or a.deleted_at is not None:
         raise HTTPException(404, "asset not found")
+
+    if is_asset_encrypted(a):
+        if not is_unlocked():
+            raise HTTPException(404, "keyframe not found")
+        vpath = vault_keyframe_path(get_settings().resolved_data_dir(), a.id, scene, index)
+        if not vpath.is_file():
+            raise HTTPException(404, "keyframe not found")
+        state = get_state()
+        if not state.subkeys:
+            raise HTTPException(404, "keyframe not found")
+        data = decrypt_to_bytes(vpath, key=bytes(state.subkeys.content_enc_key), asset_id=a.id)
+        return Response(content=data, media_type="image/jpeg")
+
     p = get_settings().resolved_data_dir() / "keyframes" / str(asset_id) / f"scene-{scene}-{index}.jpg"
     if not p.is_file():
         raise HTTPException(404, "keyframe not found")
@@ -324,19 +341,78 @@ def _asset_path(a: Asset) -> Path | None:
     return None
 
 
+def _asset_path(a: Asset) -> Path | None:
+    """Resolve an asset's on-disk file from its ``path`` column.
+
+    Two layouts are supported:
+      * scanned media:   ``{media_root}\0{relative}``
+      * uploaded media:  ``uploads\0{absolute_staging_path}``
+    Returns ``None`` when the file cannot be resolved or is not a regular file.
+    """
+    if "\0" not in a.path:
+        return None
+    kind, _, rest = a.path.partition("\0")
+    if kind == "uploads":
+        p = Path(rest)
+        if p.is_file():
+            return p
+        return None
+    root = Path(kind)
+    # Guard against path traversal — resolved must stay under the media root.
+    try:
+        resolved = (root / rest).resolve()
+    except OSError:
+        return None
+    if resolved.is_file() and resolved.is_relative_to(root.resolve()):
+        return resolved
+    return None
+
+
 @router.get("/assets/{asset_id}/file", summary="Stream an asset's original file (read-only)")
-def asset_file(asset_id: int, session: Session = Depends(get_db)):
+def asset_file(
+    asset_id: int,
+    session: Session = Depends(get_db),
+    range_header: str | None = Header(default=None, alias="Range"),
+):
     a = session.get(Asset, asset_id)
     if a is None or a.deleted_at is not None:
         raise HTTPException(404, "asset not found")
-    p = _asset_path(a)
-    if p is None:
-        raise HTTPException(404, "file not found on disk")
-    media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-    return FileResponse(
-        p,
+
+    # Plaintext assets: preserve legacy FileResponse contract (404 if the
+    # on-disk file is missing or the stored path escapes the media root).
+    if not is_asset_encrypted(a):
+        p = _asset_path(a)
+        if p is None:
+            raise HTTPException(404, "file not found on disk")
+        media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+        return FileResponse(
+            p,
+            media_type=media_type,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+
+    iterator, media_type, total_size = read_asset_stream(a, range_header=range_header)
+    if total_size is None:
+        async def _collect() -> bytes:
+            chunks = []
+            async for c in iterator:
+                chunks.append(c)
+            return b"".join(chunks)
+
+        return StreamingResponse(
+            _collect(),
+            media_type=media_type,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(total_size),
+    }
+    return StreamingResponse(
+        iterator,
         media_type=media_type,
-        headers={"X-Content-Type-Options": "nosniff"},
+        headers=headers,
     )
 
 
@@ -346,29 +422,22 @@ def asset_thumbnail(
     size: str = Query("small", pattern="^(small|medium|placeholder)$"),
     session: Session = Depends(get_db),
 ):
-    """Return a generated thumbnail for an asset from ``{data_dir}/thumbs/``.
+    """Return a generated thumbnail for an asset.
 
-    ``size`` selects the bucket written by the ``thumbnail`` plugin. Falls back
-    to the original file only when no thumbnail exists yet and the asset is an
-    image — this keeps the grid usable while jobs are still queued.
+    Encrypted assets route through the vault; vault-locked requests fall
+    through to the legacy plaintext fallback (the original file for
+    images) which keeps the grid usable while a job is still queued.
     """
+
     a = session.get(Asset, asset_id)
     if a is None or a.deleted_at is not None:
         raise HTTPException(404, "asset not found")
 
-    thumbs_dir = get_settings().resolved_data_dir() / "thumbs" / str(a.id)
-    candidates = [thumbs_dir / f"{size}.jpg"]
-    if size == "placeholder":
-        candidates.insert(0, thumbs_dir / "_frame.png")
-    for p in candidates:
-        if p.is_file():
-            return FileResponse(p, media_type="image/jpeg")
-    if size == "placeholder":
-        if (thumbs_dir / "_frame.png").is_file():
-            return FileResponse(thumbs_dir / "_frame.png", media_type="image/png")
+    thumb = _read_thumbnail_bytes(a, size)
+    if thumb is not None:
+        data, mime = thumb
+        return Response(content=data, media_type=mime)
 
-    # No thumbnail yet: for images serve the original; for anything else 404
-    # and let the frontend show its labeled tile.
     if a.media_type == "image":
         p = _asset_path(a)
         if p is not None:
@@ -721,24 +790,18 @@ def public_thumbnail(
 ):
     """Return a generated thumbnail for a shared album asset.
 
-    ``size`` is a path parameter selecting the bucket written by the
-    ``thumbnail`` plugin. Fallback to the original image when no thumbnail
-    exists yet, matching the authenticated endpoint behaviour.
+    Encrypted assets route through the vault; vault-locked requests
+    fall through to the legacy plaintext fallback for images.
     """
     if size not in ("small", "medium", "placeholder"):
         raise HTTPException(422, "size must be one of small, medium, placeholder")
     share = _live_share(session, token)
     a = _shared_asset(session, share, asset_id)
 
-    thumbs_dir = get_settings().resolved_data_dir() / "thumbs" / str(a.id)
-    candidates = [thumbs_dir / f"{size}.jpg"]
-    if size == "placeholder":
-        candidates.insert(0, thumbs_dir / "_frame.png")
-    for p in candidates:
-        if p.is_file():
-            return FileResponse(p, media_type="image/jpeg")
-    if size == "placeholder" and (thumbs_dir / "_frame.png").is_file():
-        return FileResponse(thumbs_dir / "_frame.png", media_type="image/png")
+    thumb = _read_thumbnail_bytes(a, size)
+    if thumb is not None:
+        data, mime = thumb
+        return Response(content=data, media_type=mime)
 
     if a.media_type == "image":
         p = _asset_path(a)
@@ -758,17 +821,75 @@ def public_file(
     if not share.allow_original:
         raise HTTPException(403, "original access not allowed")
     a = _shared_asset(session, share, asset_id)
-    p = _asset_path(a)
-    if p is None:
-        raise HTTPException(404, "file not found on disk")
-    media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-    headers = {"X-Content-Type-Options": "nosniff"}
-    filename = p.name
+    iterator, media_type, total_size = read_asset_stream(a)
+    if total_size is None:
+        # Placeholder / single-shot
+        async def _collect() -> bytes:
+            chunks = []
+            async for c in iterator:
+                chunks.append(c)
+            return b"".join(chunks)
+
+        headers = {"X-Content-Type-Options": "nosniff"}
+        if share.allow_download:
+            headers["Content-Disposition"] = f'attachment; filename="locked-asset.bin"'
+        return StreamingResponse(
+            _collect(),
+            media_type=media_type,
+            headers=headers,
+        )
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(total_size),
+    }
     if share.allow_download:
-        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return FileResponse(
-        p,
+        headers["Content-Disposition"] = f'attachment; filename="{a.filename or "asset.bin"}"'
+    return StreamingResponse(
+        iterator,
         media_type=media_type,
-        filename=filename if share.allow_download else None,
         headers=headers,
     )
+
+
+# ---------------------------------------------------------------------------
+# v2 content encryption helpers
+# ---------------------------------------------------------------------------
+
+
+def _read_thumbnail_bytes(a: Asset, size: str) -> tuple[bytes, str] | None:
+    """Resolve a thumbnail (small / medium / placeholder) reading from
+    the vault when the asset is encrypted, or from the legacy thumbs/
+    directory otherwise.
+
+    Returns ``(bytes, mime)`` or ``None`` if no thumbnail is available.
+    """
+
+    if is_asset_encrypted(a):
+        if not is_unlocked():
+            return None
+        vpath = vault_thumbnail_path(get_settings().resolved_data_dir(), a.id, size)
+        if not vpath.is_file():
+            return None
+        state = get_state()
+        if not state.subkeys:
+            return None
+        data = decrypt_to_bytes(vpath, key=bytes(state.subkeys.content_enc_key), asset_id=a.id)
+        return data, "image/jpeg"
+
+    thumbs_dir = get_settings().resolved_data_dir() / "thumbs" / str(a.id)
+    candidates = [thumbs_dir / f"{size}.jpg"]
+    if size == "placeholder":
+        candidates.insert(0, thumbs_dir / "_frame.png")
+    for p in candidates:
+        if p.is_file():
+            return p.read_bytes(), mimetypes.guess_type(p.name)[0] or "image/jpeg"
+    if size == "placeholder" and (thumbs_dir / "_frame.png").is_file():
+        return (thumbs_dir / "_frame.png").read_bytes(), "image/png"
+    return None
+
+
+def _resolve_plain_for(a: Asset) -> Path | None:
+    """Backwards-compatible alias for the legacy path resolver."""
+
+    return _resolve_plain_path(a)
