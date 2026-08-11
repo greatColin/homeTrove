@@ -6,6 +6,7 @@ described in the project README §8.2, narrowed to the minimum sufficient set.
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -45,9 +46,28 @@ def resolve_asset_path(asset: AssetLike) -> Optional[Path]:
     Two layouts are supported:
       * scanned media:   ``{media_root}\0{relative}``
       * uploaded media:  ``uploads\0{absolute_staging_path}``
+    When the vault is unlocked and the asset is encrypted (Asset DB model with
+    an empty path and a non-empty encrypted_path), the decrypted content is
+    written to a process-owned temp file and returned; the temp file is
+    registered for deletion on interpreter exit so callers do not need to
+    manage its lifecycle.
     Returns ``None`` when the file cannot be resolved or is not a regular file.
     """
     raw = asset.path
+    if not raw:
+        enc_path = getattr(asset, "encrypted_path", None) if hasattr(asset, "encrypted_path") else None
+        if enc_path:
+            from hometrove.vault import is_unlocked
+            if is_unlocked():
+                from hometrove.vault.read import read_asset_bytes
+                data, _ = read_asset_bytes(asset)
+                import tempfile, atexit
+                fd, tmp = tempfile.mkstemp(suffix=".bin", prefix=f"hometrove-asset-{asset.id}-")
+                os.write(fd, data)
+                os.close(fd)
+                atexit.register(lambda: Path(tmp).unlink(missing_ok=True))
+                return Path(tmp)
+        return None
     if "\0" in raw:
         kind, _, rest = raw.partition("\0")
         if kind == "uploads":
@@ -139,6 +159,10 @@ class PluginContext:
         otherwise ``count`` evenly spaced points are sampled. Memoized per
         ``(count, tuple(at_seconds))`` — repeated calls across plugins reuse
         the decoded frames instead of re-seeking.
+
+        For encrypted assets with vault unlocked, the decrypted bytes are
+        written to a temp file so PyAV can read them; the temp file is
+        cleaned up after frame extraction.
         """
         import numpy as np
 
@@ -148,29 +172,44 @@ class PluginContext:
             return cached
 
         src = resolve_asset_path(self.asset)
+        tmp_path: Path | None = None
         out: list[Any] = []
-        if src is not None and self.asset.media_type == MediaType.VIDEO.value:
-            try:
-                import av
+        if self.asset.media_type == MediaType.VIDEO.value:
+            if src is None:
+                from hometrove.vault.read import is_asset_encrypted, read_asset_bytes
+                if is_asset_encrypted(self.asset):
+                    data = read_asset_bytes(self.asset)
+                    if data is not None:
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as f:
+                            f.write(data)
+                            tmp_path = Path(f.name)
+                        src = tmp_path
+            if src is not None:
+                try:
+                    import av
 
-                times = at_seconds
-                if times is None:
+                    times = at_seconds
+                    if times is None:
+                        with av.open(str(src)) as container:
+                            duration = float(container.duration or 0) / 1_000_000
+                        times = [
+                            duration * (i + 0.5) / count for i in range(count)
+                        ] if duration > 0 else [0.0]
+
                     with av.open(str(src)) as container:
-                        duration = float(container.duration or 0) / 1_000_000
-                    times = [
-                        duration * (i + 0.5) / count for i in range(count)
-                    ] if duration > 0 else [0.0]
-
-                with av.open(str(src)) as container:
-                    stream = container.streams.video[0]
-                    for ts in times:
-                        container.seek(int(ts * 1_000_000), stream=stream)
-                        for frame in container.decode(video=0):
-                            arr = np.asarray(frame.to_ndarray(format="rgb24"))
-                            out.append(arr)
-                            break
-            except Exception:  # noqa: BLE001  — undecodable => []
-                out = []
+                        stream = container.streams.video[0]
+                        for ts in times:
+                            container.seek(int(ts * 1_000_000), stream=stream)
+                            for frame in container.decode(video=0):
+                                arr = np.asarray(frame.to_ndarray(format="rgb24"))
+                                out.append(arr)
+                                break
+                except Exception:  # noqa: BLE001  — undecodable => []
+                    out = []
+                finally:
+                    if tmp_path is not None and tmp_path.exists():
+                        tmp_path.unlink(missing_ok=True)
         self._frames_cache[key] = out
         return out
 

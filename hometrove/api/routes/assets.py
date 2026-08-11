@@ -298,7 +298,8 @@ def asset_keyframe_file(
 
     if is_asset_encrypted(a):
         if not is_unlocked():
-            raise HTTPException(404, "keyframe not found")
+            pd, pm = _placeholder_for_asset(a)
+            return Response(content=pd, media_type=pm)
         vpath = vault_keyframe_path(get_settings().resolved_data_dir(), a.id, scene, index)
         if not vpath.is_file():
             raise HTTPException(404, "keyframe not found")
@@ -424,9 +425,8 @@ def asset_thumbnail(
 ):
     """Return a generated thumbnail for an asset.
 
-    Encrypted assets route through the vault; vault-locked requests fall
-    through to the legacy plaintext fallback (the original file for
-    images) which keeps the grid usable while a job is still queued.
+    Encrypted assets route through the vault; vault-locked requests return
+    placeholder bytes so the grid stays usable (200, not 401/404).
     """
 
     a = session.get(Asset, asset_id)
@@ -438,11 +438,31 @@ def asset_thumbnail(
         data, mime = thumb
         return Response(content=data, media_type=mime)
 
-    if a.media_type == "image":
+    if a.media_type == "image" and not is_asset_encrypted(a):
         p = _asset_path(a)
         if p is not None:
             media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
             return FileResponse(p, media_type=media_type)
+
+    if is_asset_encrypted(a):
+        if not is_unlocked():
+            placeholder_data, placeholder_mime = _placeholder_for_asset(a)
+            if placeholder_data:
+                return Response(content=placeholder_data, media_type=placeholder_mime)
+        else:
+            from hometrove.vault.read import read_asset_bytes
+            try:
+                data = read_asset_bytes(a)
+                if data:
+                    mime = mimetypes.guess_type(a.filename or "image.jpg")[0] or "image/jpeg"
+                    return Response(content=data, media_type=mime)
+            except Exception:
+                pass
+
+    placeholder_data, placeholder_mime = _placeholder_for_asset(a)
+    if placeholder_data:
+        return Response(content=placeholder_data, media_type=placeholder_mime)
+
     raise HTTPException(404, "thumbnail not found")
 
 
@@ -803,11 +823,31 @@ def public_thumbnail(
         data, mime = thumb
         return Response(content=data, media_type=mime)
 
-    if a.media_type == "image":
+    if a.media_type == "image" and not is_asset_encrypted(a):
         p = _asset_path(a)
         if p is not None:
             media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
             return FileResponse(p, media_type=media_type)
+
+    if is_asset_encrypted(a):
+        if not is_unlocked():
+            placeholder_data, placeholder_mime = _placeholder_for_asset(a)
+            if placeholder_data:
+                return Response(content=placeholder_data, media_type=placeholder_mime)
+        else:
+            from hometrove.vault.read import read_asset_bytes
+            try:
+                data = read_asset_bytes(a)
+                if data:
+                    mime = mimetypes.guess_type(a.filename or "image.jpg")[0] or "image/jpeg"
+                    return Response(content=data, media_type=mime)
+            except Exception:
+                pass
+
+    placeholder_data, placeholder_mime = _placeholder_for_asset(a)
+    if placeholder_data:
+        return Response(content=placeholder_data, media_type=placeholder_mime)
+
     raise HTTPException(404, "thumbnail not found")
 
 
@@ -893,3 +933,16 @@ def _resolve_plain_for(a: Asset) -> Path | None:
     """Backwards-compatible alias for the legacy path resolver."""
 
     return _resolve_plain_path(a)
+
+
+def _placeholder_for_asset(a: Asset) -> tuple[bytes, str]:
+    """Return placeholder bytes+media_type for an encrypted asset when vault
+    is locked and no thumbnail is available. Mirrors the vault.read module's
+    placeholder logic so the HTTP layer stays self-contained."""
+    from hometrove.vault.placeholders import ensure_placeholders, placeholder_for_media_type
+    data_dir = get_settings().resolved_data_dir()
+    ensure_placeholders(data_dir)
+    path, mime = placeholder_for_media_type(data_dir, a.media_type)
+    if path.is_file():
+        return path.read_bytes(), mime
+    return b"", "application/octet-stream"

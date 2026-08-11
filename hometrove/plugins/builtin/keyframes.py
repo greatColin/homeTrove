@@ -56,10 +56,6 @@ class KeyframesPlugin(BasePlugin):
         if vault_state.status == VaultStatus.LOCKED:
             return {"status": "skipped", "reason": "vault is locked"}
 
-        src = resolve_asset_path(asset)
-        if src is None:
-            return {"status": "skipped", "reason": "source file missing"}
-
         scenes = self._scenes(ctx, params.max_scenes)
         times, windows = self._sample_times(scenes, params.per_scene)
 

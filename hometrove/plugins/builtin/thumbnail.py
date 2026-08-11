@@ -68,6 +68,8 @@ class ThumbnailPlugin(BasePlugin):
         if vault_state.status == VaultStatus.LOCKED:
             return {"status": "skipped", "reason": "vault is locked"}
 
+        tmp_src: Path | None = None
+
         src = resolve_asset_path(asset)
         if src is None:
             return {"status": "skipped", "reason": "source file missing"}
@@ -132,7 +134,12 @@ class ThumbnailPlugin(BasePlugin):
                         dest.write_bytes(payload)
                         produced[size_key] = dest.name
         except Exception as exc:  # noqa: BLE001  — any image decode error is a skip, not a failure
+            if tmp_src and tmp_src.exists():
+                tmp_src.unlink(missing_ok=True)
             return {"status": "skipped", "reason": f"decode error: {exc}"}
+
+        if tmp_src and tmp_src.exists():
+            tmp_src.unlink(missing_ok=True)
 
         return {
             "status": "ok",
