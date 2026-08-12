@@ -370,7 +370,7 @@ def _asset_path(a: Asset) -> Path | None:
 
 
 @router.get("/assets/{asset_id}/file", summary="Stream an asset's original file (read-only)")
-def asset_file(
+async def asset_file(
     asset_id: int,
     session: Session = Depends(get_db),
     range_header: str | None = Header(default=None, alias="Range"),
@@ -379,8 +379,6 @@ def asset_file(
     if a is None or a.deleted_at is not None:
         raise HTTPException(404, "asset not found")
 
-    # Plaintext assets: preserve legacy FileResponse contract (404 if the
-    # on-disk file is missing or the stored path escapes the media root).
     if not is_asset_encrypted(a):
         p = _asset_path(a)
         if p is None:
@@ -392,28 +390,11 @@ def asset_file(
             headers={"X-Content-Type-Options": "nosniff"},
         )
 
-    iterator, media_type, total_size = read_asset_stream(a, range_header=range_header)
-    if total_size is None:
-        async def _collect() -> bytes:
-            chunks = []
-            async for c in iterator:
-                chunks.append(c)
-            return b"".join(chunks)
-
-        return StreamingResponse(
-            _collect(),
-            media_type=media_type,
-            headers={"X-Content-Type-Options": "nosniff"},
-        )
-    headers = {
-        "X-Content-Type-Options": "nosniff",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(total_size),
-    }
+    iterator, media_type, _total_size = read_asset_stream(a, range_header=range_header)
     return StreamingResponse(
         iterator,
         media_type=media_type,
-        headers=headers,
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -852,7 +833,7 @@ def public_thumbnail(
 
 
 @router.get("/public/files/{token}/{asset_id}", summary="Original file for a shared album asset")
-def public_file(
+async def public_file(
     token: str,
     asset_id: int,
     session: Session = Depends(get_db),
@@ -861,28 +842,9 @@ def public_file(
     if not share.allow_original:
         raise HTTPException(403, "original access not allowed")
     a = _shared_asset(session, share, asset_id)
-    iterator, media_type, total_size = read_asset_stream(a)
-    if total_size is None:
-        # Placeholder / single-shot
-        async def _collect() -> bytes:
-            chunks = []
-            async for c in iterator:
-                chunks.append(c)
-            return b"".join(chunks)
+    iterator, media_type, _total_size = read_asset_stream(a)
 
-        headers = {"X-Content-Type-Options": "nosniff"}
-        if share.allow_download:
-            headers["Content-Disposition"] = f'attachment; filename="locked-asset.bin"'
-        return StreamingResponse(
-            _collect(),
-            media_type=media_type,
-            headers=headers,
-        )
-    headers = {
-        "X-Content-Type-Options": "nosniff",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(total_size),
-    }
+    headers = {"X-Content-Type-Options": "nosniff"}
     if share.allow_download:
         headers["Content-Disposition"] = f'attachment; filename="{a.filename or "asset.bin"}"'
     return StreamingResponse(
