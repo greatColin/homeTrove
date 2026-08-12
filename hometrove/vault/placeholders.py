@@ -119,7 +119,10 @@ def _video_frame(width: int, height: int, frame_no: int, total: int) -> "list":
     box_alpha = int(255 * alpha)
     draw.rounded_rectangle((cx - 60, cy - 100, cx + 60, cy + 20), radius=10, fill=(120, 120, 120))
     draw.rounded_rectangle((cx - 80, cy + 20, cx + 80, cy + 100), radius=18, fill=(120, 120, 120))
-    draw.arc((cx - 60, cy - 180, cx + 60, cy - 100), start=0, end=180, outline=(120, 120, 120), width=10)
+    try:
+        draw.arc((cx - 60, cy - 180, cx + 60, cy - 100), start=0, end=180, outline=(120, 120, 120), width=10)
+    except TypeError:
+        draw.arc((cx - 60, cy - 180, cx + 60, cy - 100), start=0, end=180, fill=(120, 120, 120), width=10)
     draw.text((cx - 360, cy + 160), _CAPTION, fill=(220, 220, 220))
     del box_alpha
     return np.array(img)
