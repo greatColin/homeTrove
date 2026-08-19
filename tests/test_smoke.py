@@ -1220,6 +1220,137 @@ def test_plugin_shutdown_releases_resources(tmp_data_dir):
     assert fd._APP is None
 
 
+def test_plugins_api_enabled_filter(tmp_data_dir):
+    """GET /api/plugins?enabled=true only returns enabled plugins."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import PluginConfig
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.put("/api/plugins/exif", json={"enabled": False})
+        assert r.status_code == 200
+
+        r = c.get("/api/plugins?enabled=true")
+        assert r.status_code == 200
+        ids = [x["id"] for x in r.json()["items"]]
+        assert "exif" not in ids
+        assert "basic.info" in ids
+
+        r = c.get("/api/plugins")
+        ids = [x["id"] for x in r.json()["items"]]
+        assert "exif" in ids
+
+    with session_scope() as s:
+        assert s.get(PluginConfig, "exif").enabled == 0
+
+
+def test_plugin_status_and_logs_endpoints(tmp_data_dir):
+    """GET /api/plugins/{id}/status and /logs return lifecycle info."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.plugins.lifecycle import plugin_log  # noqa: F401
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/plugins/basic.info/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == "basic.info"
+        assert body["status"] in {"idle", "loading", "active", "stopping", "error"}
+
+        r = c.get("/api/plugins/basic.info/logs?limit=10")
+        assert r.status_code == 200
+        body = r.json()
+        assert "items" in body
+        assert isinstance(body["items"], list)
+
+        r = c.get("/api/plugins/does-not-exist/status")
+        assert r.status_code == 404
+
+        r = c.get("/api/plugins/does-not-exist/logs")
+        assert r.status_code == 404
+
+
+def test_plugin_startup_runs_on_enable(tmp_data_dir):
+    """Enabling a plugin invokes its startup() hook and updates status."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import PluginConfig
+    from hometrove.plugins.lifecycle import get_status
+    from hometrove.plugins.registry import REGISTRY
+
+    # Disable first, then re-enable via the API to exercise the startup path.
+    app = create_app()
+    plugin = REGISTRY.get("basic.info")
+    original_startup = plugin.startup
+    calls = []
+
+    def spy_startup():
+        calls.append("startup")
+        original_startup()
+
+    plugin.startup = spy_startup  # type: ignore[method-assign]
+    try:
+        with TestClient(app) as c:
+            r = c.put("/api/plugins/basic.info", json={"enabled": False})
+            assert r.status_code == 200
+            assert "startup" not in calls
+
+            r = c.put("/api/plugins/basic.info", json={"enabled": True})
+            assert r.status_code == 200
+            assert "startup" in calls
+
+            info = get_status("basic.info")
+            assert info.status.value == "active"
+    finally:
+        plugin.startup = original_startup  # type: ignore[method-assign]
+
+    with session_scope() as s:
+        assert s.get(PluginConfig, "basic.info").enabled == 1
+
+
+def test_upload_rejects_disabled_plugin_ids(tmp_data_dir):
+    """Upload ingest refuses plugin_ids that are disabled."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.put("/api/plugins/basic.info", json={"enabled": False})
+        assert r.status_code == 200
+
+        # Create upload session then attempt ingest with disabled plugin.
+        r = c.post(
+            "/api/uploads",
+            json={"filename": "foo.jpg", "size": 1},
+        )
+        assert r.status_code == 200
+        upload_id = r.json()["upload_id"]
+
+        # Use URL-encoded params like the existing upload-ids test does, so
+        # FastAPI parses them as a list.
+        r = c.post(
+            f"/api/uploads/{upload_id}/ingest?plugin_ids=basic.info",
+        )
+        assert r.status_code == 400
+        assert "basic.info" in r.json()["detail"]
+
+        # Empty plugin_ids list still works (would fail with 409 not finalized).
+        r = c.post(f"/api/uploads/{upload_id}/ingest")
+        assert r.status_code == 409
+
+        # Unknown plugin id is rejected.
+        r = c.put("/api/plugins/basic.info", json={"enabled": True})
+        assert r.status_code == 200
+        r = c.post(
+            f"/api/uploads/{upload_id}/ingest?plugin_ids=does-not-exist",
+        )
+        assert r.status_code == 400
+
+
 def _add_asset_and_embedding(
     s,
     asset_id: int,

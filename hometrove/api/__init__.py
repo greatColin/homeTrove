@@ -64,11 +64,23 @@ async def lifespan(app: FastAPI):
     run_for_settings(settings, logger=logging.getLogger("hometrove.readonly"))
 
     with session_scope() as s:
+        rows = {r.plugin_id: r for r in s.query(PluginConfig).all()}
         for p in REGISTRY.list():
-            row = s.get(PluginConfig, p.id)
+            row = rows.get(p.id)
             if row is None:
                 s.add(PluginConfig(plugin_id=p.id, enabled=1))
         s.commit()
+
+        # Start enabled plugins so heavy resources (models, pools) are loaded at
+        # boot time rather than on first asset.
+        enabled_ids = {
+            p.id for p in REGISTRY.list()
+            if rows.get(p.id) is None or bool(rows.get(p.id).enabled)
+        }
+
+    from hometrove.plugins.lifecycle import start_all_enabled
+
+    start_all_enabled(enabled_ids)
 
     # v2 content encryption: bootstrap vault state from settings + DB.
     settings = get_settings()

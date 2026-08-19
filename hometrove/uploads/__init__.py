@@ -365,7 +365,10 @@ def build_router(manager: UploadManager) -> APIRouter:
         }
 
     @r.post("/{upload_id}/ingest", summary="Ingest a finalized upload into the library")
-    def ingest(upload_id: str, plugin_ids: list[str] | None = None):
+    def ingest(
+        upload_id: str,
+        plugin_ids: list[str] | None = Query(default=None),
+    ):
         from pydantic import BaseModel
 
         from hometrove.config import get_settings
@@ -375,6 +378,32 @@ def build_router(manager: UploadManager) -> APIRouter:
             s = manager.get(upload_id)
         except KeyError:
             raise HTTPException(404, "upload session not found")
+
+        # Validate requested plugins BEFORE finalization so disabled/unknown
+        # ids are reported clearly rather than hidden behind "upload not
+        # finalized yet".
+        if plugin_ids is not None:
+            from hometrove.db import session_scope as _scope_check
+            from hometrove.models import PluginConfig
+            from hometrove.plugins.registry import REGISTRY
+
+            known = {p.id for p in REGISTRY.list()}
+            unknown = [pid for pid in plugin_ids if pid not in known]
+            if unknown:
+                raise HTTPException(400, f"unknown plugin ids: {unknown}")
+            with _scope_check() as db:
+                disabled = {
+                    row.plugin_id
+                    for row in db.query(PluginConfig).all()
+                    if not row.enabled
+                }
+            rejected = [pid for pid in plugin_ids if pid in disabled]
+            if rejected:
+                raise HTTPException(
+                    400,
+                    f"plugins not enabled: {rejected}",
+                )
+
         if not s.finalized or s.final_path is None:
             raise HTTPException(409, "upload not finalized yet")
 

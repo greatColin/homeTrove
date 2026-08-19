@@ -179,8 +179,26 @@ export interface PluginDTO {
   supported_media: string[];
   depends_on: string[];
   enabled: boolean;
+  status: string;
+  status_detail: string;
+  loaded_at: number | null;
+  error_at: number | null;
   params: Record<string, unknown>;
   params_schema: Record<string, unknown>;
+}
+
+export interface PluginStatusDTO {
+  id: string;
+  status: string;
+  detail: string;
+  loaded_at: number | null;
+  error_at: number | null;
+}
+
+export interface PluginLogEntryDTO {
+  ts: number;
+  level: string;
+  message: string;
 }
 
 export interface RerunCandidate {
@@ -382,7 +400,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ keep_id: keepId, remove_id: removeId }),
     }),
-  plugins: () => request<{ items: PluginDTO[] }>("/plugins"),
+  plugins: (enabledOnly = false) =>
+    request<{ items: PluginDTO[] }>(`/plugins${enabledOnly ? "?enabled=true" : ""}`),
+  enabledPlugins: () => request<{ items: PluginDTO[] }>("/plugins?enabled=true"),
   setPluginEnabled: (id: string, enabled: boolean) =>
     request<PluginDTO>(`/plugins/${encodeURIComponent(id)}`, {
       method: "PUT",
@@ -393,6 +413,12 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled, params }),
     }),
+  pluginStatus: (id: string) =>
+    request<PluginStatusDTO>(`/plugins/${encodeURIComponent(id)}/status`),
+  pluginLogs: (id: string, limit = 100) =>
+    request<{ items: PluginLogEntryDTO[] }>(
+      `/plugins/${encodeURIComponent(id)}/logs?limit=${limit}`,
+    ),
   rerunPlugin: (id: string) =>
     request<{ ok: boolean; dropped: number; enqueued: number }>(
       `/plugins/${encodeURIComponent(id)}/rerun`,

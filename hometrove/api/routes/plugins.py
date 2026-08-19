@@ -15,6 +15,13 @@ from hometrove.db import get_db
 from hometrove.models import Asset, Job, PluginConfig
 from hometrove.plugins.api import AssetLike, PluginContext
 from hometrove.plugins.builtin.basic_info import classify
+from hometrove.plugins.lifecycle import (
+    PluginStatus,
+    get_logs as get_plugin_logs,
+    get_status as get_plugin_status,
+    shutdown_plugin,
+    startup_plugin,
+)
 from hometrove.plugins.registry import REGISTRY
 from hometrove.scanner import enqueue_pending
 from hometrove.api.deps import require_auth
@@ -29,6 +36,7 @@ def _plugin_dto(p, row: PluginConfig | None) -> dict[str, Any]:
             params = json.loads(row.params_json)
         except json.JSONDecodeError:
             params = {}
+    status_info = get_plugin_status(p.id)
     return {
         "id": p.id,
         "name": p.name,
@@ -37,20 +45,27 @@ def _plugin_dto(p, row: PluginConfig | None) -> dict[str, Any]:
         "supported_media": sorted(p.supported_media),
         "depends_on": list(p.depends_on),
         "enabled": bool(row.enabled) if row is not None else True,
+        "status": status_info.status.value,
+        "status_detail": status_info.detail,
+        "loaded_at": status_info.loaded_at,
+        "error_at": status_info.error_at,
         "params": params,
         "params_schema": p.ParamsModel.model_json_schema(),
     }
 
 
 @router.get("/plugins")
-def list_plugins(session: Session = Depends(get_db)):
+def list_plugins(enabled_only: bool = Query(False, alias="enabled"), session: Session = Depends(get_db)):
     rows = {
         r.plugin_id: r
         for r in session.query(PluginConfig).all()
     }
     plugins = []
     for p in REGISTRY.list():
-        plugins.append(_plugin_dto(p, rows.get(p.id)))
+        dto = _plugin_dto(p, rows.get(p.id))
+        if enabled_only and not dto["enabled"]:
+            continue
+        plugins.append(dto)
     # Deterministic order: registry order, not dict hashing.
     plugins.sort(key=lambda x: x["id"])
     return {"items": plugins}
@@ -59,6 +74,15 @@ def list_plugins(session: Session = Depends(get_db)):
 class PluginUpdate(BaseModel):
     enabled: bool
     params: dict[str, Any] | None = None
+
+
+@router.get("/plugins/{plugin_id}")
+def get_plugin(plugin_id: str, session: Session = Depends(get_db)):
+    """Return one plugin's details, used by the Agent CLI ``describe-plugin``."""
+    if plugin_id not in {p.id for p in REGISTRY.list()}:
+        raise HTTPException(404, "unknown plugin")
+    row = session.get(PluginConfig, plugin_id)
+    return _plugin_dto(REGISTRY.get(plugin_id), row)
 
 
 @router.put("/plugins/{plugin_id}")
@@ -87,13 +111,13 @@ def update_plugin(plugin_id: str, body: PluginUpdate, session: Session = Depends
 
     session.commit()
 
-    # Disabling a plugin should release its in-memory resources (e.g. loaded
-    # models). On-disk artifacts are deliberately untouched.
-    if not body.enabled:
-        try:
-            plugin.shutdown()
-        except Exception:  # noqa: BLE001  — shutdown must not break the API call
-            pass
+    # Lifecycle hooks run after the DB commit so the persisted state matches
+    # the runtime state. Failures are captured in the in-memory status and
+    # do not roll back the config change.
+    if body.enabled:
+        startup_plugin(plugin_id)
+    else:
+        shutdown_plugin(plugin_id)
 
     fresh = session.get(PluginConfig, plugin_id)
     return _plugin_dto(plugin, fresh)
@@ -225,6 +249,36 @@ def rerun_selected(
         media_types=sorted(plugin.supported_media) or None,
     )
     return {"ok": True, "dropped": dropped, "enqueued": enqueued}
+
+
+@router.get("/plugins/{plugin_id}/status")
+def plugin_status(plugin_id: str):
+    plugin = REGISTRY.get(plugin_id) if plugin_id in {
+        p.id for p in REGISTRY.list()
+    } else None
+    if plugin is None:
+        raise HTTPException(404, "unknown plugin")
+    info = get_plugin_status(plugin_id)
+    return {
+        "id": plugin_id,
+        "status": info.status.value,
+        "detail": info.detail,
+        "loaded_at": info.loaded_at,
+        "error_at": info.error_at,
+    }
+
+
+@router.get("/plugins/{plugin_id}/logs")
+def plugin_logs(
+    plugin_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+):
+    plugin = REGISTRY.get(plugin_id) if plugin_id in {
+        p.id for p in REGISTRY.list()
+    } else None
+    if plugin is None:
+        raise HTTPException(404, "unknown plugin")
+    return {"items": get_plugin_logs(plugin_id, limit)}
 
 
 # ---------------------------------------------------------------------------

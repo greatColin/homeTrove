@@ -33,9 +33,28 @@ function PluginChecklist({
   selected: Set<string>;
   onChange: (ids: string[]) => void;
 }) {
+  const allSelected = plugins.length > 0 && plugins.every((p) => selected.has(p.id));
+  const toggleAll = () => {
+    if (allSelected) {
+      onChange([]);
+    } else {
+      onChange(plugins.map((p) => p.id));
+    }
+  };
+
   return (
     <div className="mt-3 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-800/50">
-      <p className="mb-2 text-xs font-medium text-neutral-500">选择本次上传的插件（留空使用全局设置）</p>
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-medium text-neutral-500">选择本次上传的插件（仅显示已启用插件）</p>
+        {plugins.length > 0 && (
+          <button
+            onClick={toggleAll}
+            className="text-xs text-brand-600 hover:text-brand-700 dark:text-brand-300"
+          >
+            {allSelected ? "取消全选" : "全选"}
+          </button>
+        )}
+      </div>
       <div className="flex flex-wrap gap-2">
         {plugins.map((p) => {
           const checked = selected.has(p.id);

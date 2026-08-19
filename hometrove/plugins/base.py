@@ -42,6 +42,16 @@ class BasePlugin:
     def estimate(self, asset: AssetLike) -> Cost:  # noqa: ARG002
         return Cost(seconds=0.0, device="cpu")
 
+    def startup(self) -> None:
+        """Initialize process-level resources held by this plugin.
+
+        Called when the plugin is enabled through the settings API or at
+        application startup if the plugin is already enabled. Default is a
+        no-op; plugins that lazily load heavy artifacts (models, pools) should
+        implement this hook. Any exception raised here flips the plugin status
+        to ``error``.
+        """
+
     def shutdown(self) -> None:
         """Release any process-level resources held by this plugin.
 

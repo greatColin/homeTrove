@@ -82,7 +82,9 @@ ENDPOINTS: dict[str, dict[str, Any]] = {
     "plugins": {
         "method": "GET",
         "path": "/api/plugins",
-        "params": {},
+        "params": {
+            "enabled": {"type": "bool", "help": "only show enabled plugins"},
+        },
         "help": "list installed plugins",
     },
     "plugin": {
@@ -92,6 +94,23 @@ ENDPOINTS: dict[str, dict[str, Any]] = {
             "plugin_id": {"type": "str", "required": True, "path": True, "help": "plugin id"},
         },
         "help": "get plugin details",
+    },
+    "plugin-status": {
+        "method": "GET",
+        "path": "/api/plugins/{plugin_id}/status",
+        "params": {
+            "plugin_id": {"type": "str", "required": True, "path": True, "help": "plugin id"},
+        },
+        "help": "get plugin runtime status",
+    },
+    "plugin-logs": {
+        "method": "GET",
+        "path": "/api/plugins/{plugin_id}/logs",
+        "params": {
+            "plugin_id": {"type": "str", "required": True, "path": True, "help": "plugin id"},
+            "limit": {"type": "int", "default": 100, "help": "max log entries (1-1000)"},
+        },
+        "help": "get plugin runtime logs",
     },
     "persons": {
         "method": "GET",
@@ -158,7 +177,17 @@ class AgentClient:
     ) -> dict[str, Any]:
         url = urljoin(self.host + "/", path.lstrip("/"))
         if query:
-            qs = urlencode({k: v for k, v in query.items() if v is not None})
+            # Expand list values into repeated ``key=v`` entries so FastAPI
+            # parses them as lists, instead of urlencoding ``repr(list)``.
+            flat: list[tuple[str, Any]] = []
+            for k, v in query.items():
+                if v is None:
+                    continue
+                if isinstance(v, (list, tuple)):
+                    flat.extend((k, item) for item in v)
+                else:
+                    flat.append((k, v))
+            qs = urlencode(flat)
             if qs:
                 url = f"{url}?{qs}"
         req = urllib.request.Request(
@@ -314,6 +343,8 @@ def cmd_endpoints(client: AgentClient, args: argparse.Namespace) -> int:
         print(f"{name:20s} {spec['method']:6s} {spec['path']:<30s} # {spec['help']}")
     # Dedicated subcommands that do not go through the generic ``call`` path.
     print(f"{'upload':20s} {'POST':6s} {'/api/uploads (chunked)':<30s} # upload a file and ingest it")
+    print(f"{'plugins':20s} {'GET':6s} {'/api/plugins':<30s} # list installed plugins")
+    print(f"{'describe-plugin':20s} {'GET':6s} {'/api/plugins/{plugin_id}':<30s} # show plugin details")
     print(f"{'test-plugin':20s} {'POST':6s} {'/api/plugins/{plugin_id}/test':<30s} # run a plugin against a file")
     return 0
 
@@ -350,6 +381,32 @@ def cmd_call(client: AgentClient, args: argparse.Namespace) -> int:
     return 0
 
 
+def _enabled_plugin_ids(client: AgentClient) -> set[str]:
+    """Return the set of currently enabled plugin ids from the server."""
+    result = client.request("GET", "/api/plugins", query={"enabled": "true"})
+    return {p["id"] for p in result.get("items", [])}
+
+
+def cmd_plugins(client: AgentClient, args: argparse.Namespace) -> int:
+    query: dict[str, Any] = {}
+    if args.enabled:
+        query["enabled"] = "true"
+    result = client.request("GET", "/api/plugins", query=query)
+    items = result.get("items", [])
+    if args.enabled:
+        for p in items:
+            print(p["id"])
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_describe_plugin(client: AgentClient, args: argparse.Namespace) -> int:
+    result = client.request("GET", f"/api/plugins/{args.plugin_id}")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_upload(client: AgentClient, args: argparse.Namespace) -> int:
     file_path = Path(args.file)
     if not file_path.is_file():
@@ -357,7 +414,17 @@ def cmd_upload(client: AgentClient, args: argparse.Namespace) -> int:
         return 2
     plugins = None
     if args.plugins:
-        plugins = [p.strip() for p in args.plugins.split(",") if p.strip()]
+        requested = [p.strip() for p in args.plugins.split(",") if p.strip()]
+        enabled = _enabled_plugin_ids(client)
+        invalid = [p for p in requested if p not in enabled]
+        if invalid:
+            print(
+                f"plugins not enabled: {', '.join(invalid)}. "
+                "Enable them in settings or omit --plugins to use all enabled plugins.",
+                file=sys.stderr,
+            )
+            return 2
+        plugins = requested
     result = client.upload_file(file_path, plugins=plugins, encrypted=args.encrypted)
     asset_id = result.get("asset_id")
     host = client.host
@@ -520,6 +587,18 @@ def main(argv: list[str] | None = None) -> int:
         help="parameter as key=value (repeatable)",
     )
 
+    # plugins
+    plugins_parser = sub.add_parser("plugins", help="list installed plugins")
+    plugins_parser.add_argument(
+        "--enabled",
+        action="store_true",
+        help="only list enabled plugins",
+    )
+
+    # describe-plugin
+    describe_plugin_parser = sub.add_parser("describe-plugin", help="show plugin details")
+    describe_plugin_parser.add_argument("plugin_id", help="plugin id, e.g. basic.info")
+
     # upload
     upload_parser = sub.add_parser("upload", help="upload a file and ingest it")
     upload_parser.add_argument("file", help="path to the file to upload")
@@ -582,6 +661,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_describe(client, args)
         if args.cmd == "call":
             return cmd_call(client, args)
+        if args.cmd == "plugins":
+            return cmd_plugins(client, args)
+        if args.cmd == "describe-plugin":
+            return cmd_describe_plugin(client, args)
         if args.cmd == "upload":
             return cmd_upload(client, args)
         if args.cmd == "search":

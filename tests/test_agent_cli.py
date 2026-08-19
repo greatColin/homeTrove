@@ -279,3 +279,63 @@ def test_cli_auth_rejects_bad_key(server_url):
     )
     assert r.returncode == 1
     assert "401" in r.stderr
+
+
+@pytest.mark.integration
+def test_cli_plugins_list(server_url):
+    r = _cli("plugins", server_url=server_url)
+    assert r.returncode == 0, r.stderr
+    body = json.loads(r.stdout)
+    assert "items" in body
+    ids = {p["id"] for p in body["items"]}
+    assert "basic.info" in ids
+
+
+@pytest.mark.integration
+def test_cli_plugins_enabled_prints_ids(server_url):
+    r = _cli("plugins", "--enabled", server_url=server_url)
+    assert r.returncode == 0, r.stderr
+    lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    assert "basic.info" in lines
+
+
+@pytest.mark.integration
+def test_cli_describe_plugin(server_url):
+    r = _cli("describe-plugin", "basic.info", server_url=server_url)
+    assert r.returncode == 0, r.stderr
+    body = json.loads(r.stdout)
+    assert body["id"] == "basic.info"
+    assert body["enabled"] is True
+    assert "status" in body
+
+
+@pytest.mark.integration
+def test_cli_upload_rejects_disabled_plugin(server_url):
+    # Disable basic.info then attempt to upload with --plugins basic.info.
+    import urllib.request
+
+    req = urllib.request.Request(
+        f"{server_url}/api/plugins/basic.info",
+        data=json.dumps({"enabled": False}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        assert resp.status == 200
+    media = Path(__file__).parent.parent / "tests" / "green.jpg"
+    if not media.is_file():
+        pytest.skip("integration media file not present")
+    r = _cli(
+        "upload", str(media), "--plugins", "basic.info", server_url=server_url,
+    )
+    assert r.returncode == 2
+    assert "basic.info" in r.stderr
+    # Re-enable for subsequent tests.
+    req = urllib.request.Request(
+        f"{server_url}/api/plugins/basic.info",
+        data=json.dumps({"enabled": True}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        assert resp.status == 200
