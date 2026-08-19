@@ -64,6 +64,10 @@ class EmbeddingBgeM3Plugin(BasePlugin):
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     # Captions come from vlm.qwen3vl; it must run (or skip) first.
     depends_on: list[str] = ["basic.info", "vlm.qwen3vl"]
+    # Same hash-based stand-in as embedding.jina_clip. Even when vlm.qwen3vl
+    # is configured with a real endpoint, this plugin still emits deterministic
+    # placeholders; the real BGE-M3 encoder is the M2 swap-in.
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         dim: int = VECTOR_DIM

@@ -179,6 +179,7 @@ export interface PluginDTO {
   supported_media: string[];
   depends_on: string[];
   enabled: boolean;
+  category: "implemented" | "stub";
   status: string;
   status_detail: string;
   loaded_at: number | null;
@@ -400,8 +401,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ keep_id: keepId, remove_id: removeId }),
     }),
-  plugins: (enabledOnly = false) =>
-    request<{ items: PluginDTO[] }>(`/plugins${enabledOnly ? "?enabled=true" : ""}`),
+  plugins: () => request<{ items: PluginDTO[] }>("/plugins"),
   enabledPlugins: () => request<{ items: PluginDTO[] }>("/plugins?enabled=true"),
   setPluginEnabled: (id: string, enabled: boolean) =>
     request<PluginDTO>(`/plugins/${encodeURIComponent(id)}`, {

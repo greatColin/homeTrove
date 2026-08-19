@@ -235,6 +235,10 @@ class AsrFasterWhisperPlugin(BasePlugin):
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.VIDEO.value}
     depends_on: list[str] = ["basic.info"]
+    # Mock is the default on a vanilla install (faster-whisper is heavy and
+    # operator-installed); the real backend only activates once the package
+    # is present. Treated as stub so the UI surfaces the dependency.
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         language: Optional[str] = None       # auto-detect when None

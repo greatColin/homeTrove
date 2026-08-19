@@ -38,6 +38,35 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+const CATEGORY_LABELS: Record<string, string> = {
+  implemented: "已实现",
+  stub: "未实现（模拟）",
+};
+
+const CATEGORY_STYLES: Record<string, string> = {
+  implemented: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300",
+  stub: "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300",
+};
+
+function CategoryBadge({ category }: { category: string }) {
+  const label = CATEGORY_LABELS[category] ?? category;
+  const style = CATEGORY_STYLES[category] ?? CATEGORY_STYLES.implemented;
+  return (
+    <span
+      className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${style}`}
+      title={
+        category === "stub"
+          ? "该插件目前输出模拟/占位数据，或依赖一个未实现的插件"
+          : "该插件从原始文件计算实际结果"
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
+type CategoryFilter = "all" | "implemented" | "stub";
+
 function Toggle({
   enabled,
   pending,
@@ -474,11 +503,21 @@ export default function Plugins() {
   const [rerunningId, setRerunningId] = useState<string | null>(null);
   const [statusId, setStatusId] = useState<string | null>(null);
   const [logsId, setLogsId] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const items: PluginDTO[] = data?.items ?? [];
   const editingPlugin = items.find((p) => p.id === editingId) ?? null;
   const rerunningPlugin = items.find((p) => p.id === rerunningId) ?? null;
   const statusPlugin = items.find((p) => p.id === statusId) ?? null;
   const logsPlugin = items.find((p) => p.id === logsId) ?? null;
+  const filteredItems =
+    categoryFilter === "all" ? items : items.filter((p) => p.category === categoryFilter);
+  const categoryCounts = items.reduce<Record<string, number>>(
+    (acc, p) => {
+      acc[p.category] = (acc[p.category] ?? 0) + 1;
+      return acc;
+    },
+    {},
+  );
 
   return (
     <div className="p-4 md:p-6">
@@ -487,12 +526,43 @@ export default function Plugins() {
         关闭插件后不再新建索引任务、队列中未运行的该插件任务暂停，并在当前进程内释放其占用内存（模型等）。磁盘上的缩略图、检测结果不会删除。「重跑」会丢弃该插件全部已完成/失败任务并整库重新入队（如调整参数后）。
       </p>
 
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-neutral-500">类型筛选：</span>
+        {(
+          [
+            { key: "all", label: "全部" },
+            { key: "implemented", label: "已实现" },
+            { key: "stub", label: "未实现（模拟）" },
+          ] as { key: CategoryFilter; label: string }[]
+        ).map((opt) => {
+          const active = categoryFilter === opt.key;
+          const count =
+            opt.key === "all"
+              ? items.length
+              : categoryCounts[opt.key] ?? 0;
+          return (
+            <button
+              key={opt.key}
+              onClick={() => setCategoryFilter(opt.key)}
+              className={`rounded border px-3 py-1 text-xs transition ${
+                active
+                  ? "border-brand-500 bg-brand-500 text-white"
+                  : "border-neutral-300 hover:bg-neutral-100 dark:border-neutral-600 dark:hover:bg-neutral-800"
+              }`}
+            >
+              {opt.label} ({count})
+            </button>
+          );
+        })}
+      </div>
+
       <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead className="bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
               <tr>
                 <th className="px-3 py-2">插件</th>
+                <th className="px-3 py-2">类别</th>
                 <th className="px-3 py-2">说明</th>
                 <th className="px-3 py-2">适用媒体</th>
                 <th className="px-3 py-2">版本</th>
@@ -502,11 +572,14 @@ export default function Plugins() {
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {items.map((p) => (
+              {filteredItems.map((p) => (
                 <tr key={p.id} className="align-top">
                   <td className="px-3 py-2">
                     <div className="font-medium">{p.name}</div>
                     <div className="font-mono text-xs text-neutral-400">{p.id}</div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <CategoryBadge category={p.category} />
                   </td>
                   <td className="px-3 py-2 text-neutral-500">
                     {p.description && (
@@ -575,6 +648,11 @@ export default function Plugins() {
         </div>
         {items.length === 0 && (
           <p className="p-6 text-center text-neutral-400">暂无插件</p>
+        )}
+        {items.length > 0 && filteredItems.length === 0 && (
+          <p className="p-6 text-center text-neutral-400">
+            当前筛选下没有插件（共 {items.length} 个）。
+          </p>
         )}
       </div>
 

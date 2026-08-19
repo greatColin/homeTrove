@@ -82,6 +82,7 @@ class MockTagsPlugin(BasePlugin):
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = ["basic.info"]
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         max_tags: int = 4
@@ -102,6 +103,7 @@ class MockCategoryPlugin(BasePlugin):
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = ["basic.info"]
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         max_categories: int = 2
@@ -126,6 +128,7 @@ class MockFacesPlugin(BasePlugin):
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value}
     depends_on: list[str] = ["basic.info"]
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         max_faces: int = 3

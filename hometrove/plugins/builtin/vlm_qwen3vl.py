@@ -197,6 +197,10 @@ class VlmQwen3vlPlugin(BasePlugin):
     # Videos need scene boundaries before per-scene captions; scene_detect is
     # ``skipped`` for images, which the dependency check treats as satisfied.
     depends_on: list[str] = ["basic.info", "basic.scene_detect"]
+    # The real backend requires an operator-configured Qwen3-VL endpoint; a
+    # vanilla install falls back to the deterministic mock. Since the mock
+    # is the default, the plugin is treated as stub until an endpoint is set.
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         prompt: str = "请用中文描述这张图片，突出主体、场景、动作、显著细节。"

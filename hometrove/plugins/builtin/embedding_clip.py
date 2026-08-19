@@ -93,6 +93,9 @@ class EmbeddingJinaClipPlugin(BasePlugin):
     # dependency. It is safe for image assets: scene_detect's job for an image
     # resolves to ``skipped``, which the dependency check treats as satisfied.
     depends_on: list[str] = ["basic.info", "basic.scene_detect"]
+    # Hash-based pseudo-vectors today; the real CLIP encoder drops in
+    # without changing the storage schema or the search path.
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         dim: int = VECTOR_DIM

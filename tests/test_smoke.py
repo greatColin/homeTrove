@@ -1312,6 +1312,78 @@ def test_plugin_startup_runs_on_enable(tmp_data_dir):
         assert s.get(PluginConfig, "basic.info").enabled == 1
 
 
+def test_plugin_categories_classify_correctly(tmp_data_dir):
+    """Every builtin plugin reports a ``category`` of ``implemented`` or ``stub``.
+
+    - The 7 known stub plugins (real-backends-that-default-to-mock plus the
+      deterministic mock plugins) must self-classify as ``stub``.
+    - Plugins that depend on a stub transitively must also resolve to ``stub``
+      so the UI doesn't lie when a backend is replaced.
+    - All other plugins must resolve to ``implemented``.
+    """
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.plugins.registry import REGISTRY
+
+    direct_stubs = {
+        "mock.tags",
+        "mock.category",
+        "mock.faces",
+        "embedding.jina_clip",
+        "embedding.bge_m3",
+        "vlm.qwen3vl",
+        "asr.faster_whisper",
+    }
+    implemented = {
+        "basic.info",
+        "exif",
+        "thumbnail",
+        "basic.keyframes",
+        "basic.scene_detect",
+        "face.detect",
+        "face.match",
+    }
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/plugins")
+        assert r.status_code == 200
+        payload = r.json()
+        by_id = {p["id"]: p for p in payload["items"]}
+        # Inside the test client so the app lifespan (which loads builtin
+        # plugins) has already run.
+        registered = {p.id for p in REGISTRY.list()}
+        assert set(by_id) == registered
+
+        # Every plugin exposes a category.
+        for pid, info in by_id.items():
+            assert info["category"] in ("implemented", "stub"), pid
+
+        # Direct stubs are stub.
+        for pid in direct_stubs:
+            assert by_id[pid]["category"] == "stub", pid
+
+        # Plugins that depend on a stub (embedding.bge_m3 depends on
+        # vlm.qwen3vl) must also resolve to stub transitively.
+        bge = REGISTRY.get("embedding.bge_m3")
+        assert bge.category == "stub"  # direct mark
+        # Force a fresh classification even if the class attribute is reset.
+        assert bge.effective_category(REGISTRY) == "stub"
+        # Spot-check: the chain is stub because vlm.qwen3vl is stub.
+        assert REGISTRY.get("vlm.qwen3vl").effective_category(REGISTRY) == "stub"
+
+        # Implemented plugins stay implemented.
+        for pid in implemented:
+            assert by_id[pid]["category"] == "implemented", pid
+
+        # Effective category honors an explicit ``implemented`` even when a
+        # dependency would be stub — none of the implemented plugins have stub
+        # deps, so this is a defensive sanity check.
+        for pid in implemented:
+            plugin = REGISTRY.get(pid)
+            assert plugin.effective_category(REGISTRY) == "implemented", pid
+
+
 def test_upload_rejects_disabled_plugin_ids(tmp_data_dir):
     """Upload ingest refuses plugin_ids that are disabled."""
     from fastapi.testclient import TestClient

@@ -45,6 +45,7 @@ def _plugin_dto(p, row: PluginConfig | None) -> dict[str, Any]:
         "supported_media": sorted(p.supported_media),
         "depends_on": list(p.depends_on),
         "enabled": bool(row.enabled) if row is not None else True,
+        "category": p.effective_category(REGISTRY),
         "status": status_info.status.value,
         "status_detail": status_info.detail,
         "loaded_at": status_info.loaded_at,
