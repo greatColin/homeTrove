@@ -399,3 +399,20 @@ class VaultState(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+
+class AppSetting(Base):
+    """Generic key/value store for app-wide, user-toggled settings.
+
+    Persisted in the DB (not env vars) so the **Settings** UI can flip
+    flags without restarting the API. The first occupant is
+    ``encrypt_new_uploads`` — the global encryption toggle for new
+    uploads. Values are stored as text; consumers parse them
+    (``"true"`` / ``"false"`` for booleans).
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)

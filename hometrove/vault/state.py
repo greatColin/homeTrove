@@ -70,6 +70,32 @@ def is_unlocked() -> bool:
     return _STATE.status == VaultStatus.UNLOCKED
 
 
+def is_configured() -> bool:
+    """True when the vault has a master password set (locked or unlocked).
+
+    Used by callers that need to decide whether to prompt for the
+    password (locked) vs. walk the user through setup (initialized).
+    ``LOCKED`` is a configured state — the master key is wrapped on
+    disk, the user just hasn't unlocked the process yet.
+    """
+    return _STATE.status in (
+        VaultStatus.INITIALIZED,
+        VaultStatus.LOCKED,
+        VaultStatus.UNLOCKED,
+    )
+
+
+def has_master_password() -> bool:
+    """True when the master password has been set (LOCKED or UNLOCKED).
+
+    This is the gate for "can we encrypt new uploads" — a fresh
+    deployment in ``INITIALIZED`` state has no master yet, so the
+    Settings toggle must refuse to enable encryption until the user
+    walks through setup.
+    """
+    return _STATE.status in (VaultStatus.LOCKED, VaultStatus.UNLOCKED)
+
+
 def require_unlocked() -> None:
     """FastAPI dependency.  Raises ``HTTPException`` if vault is locked."""
 
@@ -242,6 +268,22 @@ def _enable_for_test() -> None:
     """
     with _LOCK:
         _STATE.status = VaultStatus.LOCKED
+
+
+def _reset_for_test() -> None:
+    """Test-only: restore the vault singleton to a clean DISABLED state.
+
+    The vault state is a module-level singleton so it leaks across
+    tests in the same process. Tests that want a fresh slate should
+    call this before seeding their own state.
+    """
+    with _LOCK:
+        _reset_locked_state()
+        _STATE.status = VaultStatus.DISABLED
+        _STATE.kdf_salt = None
+        _STATE.kdf_params = None
+        _STATE.wrapped_master_key = None
+        _STATE.session_token = None
 
 
 def _force_unlock_for_test(subkeys: crypto.VaultSubkeys) -> None:

@@ -118,6 +118,13 @@ export default function Upload() {
     queryKey: ["vault-status"],
     queryFn: api.vaultStatus,
   });
+  const appSettings = useQuery({
+    queryKey: ["settings"],
+    queryFn: api.getSettings,
+  });
+  // The global toggle forces encryption on for every upload. We surface
+  // it on the upload page so the user sees why the checkbox is locked.
+  const globalEncrypt = !!appSettings.data?.encrypt_new_uploads;
   const canEncrypt = !!vault.data?.enabled && !!vault.data?.unlocked;
 
   const plugins: PluginDTO[] = pluginsData?.items ?? [];
@@ -149,13 +156,16 @@ export default function Upload() {
       setMsg("请选择一个文件");
       return;
     }
+    // The global toggle wins unless the user explicitly opted out for
+    // this upload (which the UI only allows when the toggle is OFF).
+    const effectiveEncrypted = globalEncrypt || encrypt;
     setState("creating");
     setMsg("创建上传会话…");
     try {
       const session: Session = await jfetch("", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, size: file.size, encrypted: encrypt }),
+        body: JSON.stringify({ filename: file.name, size: file.size, encrypted: effectiveEncrypted }),
       });
       const { upload_id, chunk_size } = session;
       totalChunks.current = Math.max(1, Math.ceil(file.size / chunk_size));
@@ -212,6 +222,13 @@ export default function Upload() {
     } catch (e) {
       setState("error");
       setMsg(e instanceof Error ? e.message : String(e));
+      // If the backend rejected the upload because the vault is locked,
+      // force the global VaultUnlockModal to refetch status so it auto-opens.
+      // The condition it watches (configured && !unlocked) is true on
+      // 423 responses, so the modal pops over the next tick.
+      if (e instanceof Error && /\b423\b/.test(e.message)) {
+        qc.invalidateQueries({ queryKey: ["vault-status"] });
+      }
     }
   }
 
@@ -293,14 +310,17 @@ export default function Upload() {
           <label className="mb-4 flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-300">
             <input
               type="checkbox"
-              checked={encrypt}
-              disabled={!canEncrypt}
+              checked={globalEncrypt || encrypt}
+              disabled={globalEncrypt || !canEncrypt}
               onChange={(e) => setEncrypt(e.target.checked)}
               className="h-4 w-4"
             />
             <span>
               加密上传到 vault
-              {!canEncrypt && (
+              {globalEncrypt && (
+                <span className="ml-2 text-xs text-amber-600">（全局设置已开启）</span>
+              )}
+              {!globalEncrypt && !canEncrypt && (
                 <span className="ml-2 text-xs text-amber-600">（需先解锁 vault）</span>
               )}
             </span>

@@ -12,6 +12,7 @@ import PersonsPage from "./routes/persons";
 import Plugins from "./routes/plugins";
 import Search from "./routes/search";
 import Albums from "./routes/albums";
+import Settings from "./routes/settings";
 import Trash from "./routes/trash";
 import SharedAlbum from "./routes/shared_album";
 import VaultUnlockModal, { VaultSetupPage } from "./components/vault_modal";
@@ -31,6 +32,7 @@ const nav = [
   { to: "/upload", label: "上传" },
   { to: "/plugins", label: "插件设置" },
   { to: "/trash", label: "回收站" },
+  { to: "/settings", label: "设置" },
 ];
 
 function Brand() {
@@ -165,6 +167,7 @@ export default function App() {
           <Route path="/upload" element={<Upload />} />
           <Route path="/plugins" element={<Plugins />} />
           <Route path="/trash" element={<Trash />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/share/:token" element={<SharedAlbum />} />
           <Route path="/asset/:id" element={<AssetDetail />} />
           <Route path="/vault/setup" element={<VaultSetupPage />} />

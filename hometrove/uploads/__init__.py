@@ -289,13 +289,30 @@ def build_router(manager: UploadManager) -> APIRouter:
 
     @r.post("", summary="Start an upload session")
     def create(body: dict = Body(...)):
-        encrypted = bool(body.get("encrypted", False))
+        from hometrove.app_settings import is_encrypt_new_uploads_enabled
+        from hometrove.vault.state import has_master_password as _vault_has_master
+
+        explicit_encrypted = bool(body.get("encrypted", False))
+        # The global toggle forces encryption on for every new upload unless
+        # the client explicitly opts out via ``encrypted=false``. This is the
+        # path most users hit: they flipped the toggle in Settings and expect
+        # the next upload to be encrypted.
+        toggle_on = is_encrypt_new_uploads_enabled()
+        if toggle_on and "encrypted" not in body:
+            encrypted = True
+        else:
+            encrypted = explicit_encrypted
         if encrypted:
             from hometrove.config import get_settings
             from hometrove.vault.state import is_unlocked as _is_unlocked
 
             if not get_settings().vault_enabled:
                 raise HTTPException(400, "vault is not enabled")
+            if not _vault_has_master():
+                raise HTTPException(
+                    409,
+                    "vault is not configured; visit Settings to set it up",
+                )
             if not _is_unlocked():
                 raise HTTPException(423, "vault is locked; cannot start encrypted upload")
         try:

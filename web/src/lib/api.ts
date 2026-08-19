@@ -298,6 +298,13 @@ export interface VaultStatusDTO {
   encrypted_assets: number | null;
 }
 
+export interface SettingsDTO {
+  encrypt_new_uploads: boolean;
+  vault_enabled: boolean;
+  vault_configured: boolean;
+  vault_unlocked: boolean;
+}
+
 export const vaultStatus = () => request<VaultStatusDTO>("/vault/status");
 export const vaultSetup = (password: string, confirm: string) =>
   request<{ ok: boolean; unlocked: boolean }>("/vault/setup", {
@@ -502,6 +509,12 @@ export const api = {
     }),
   vaultLock: () =>
     request<{ ok: boolean; unlocked: boolean }>("/vault/lock", { method: "POST" }),
+  getSettings: () => request<SettingsDTO>("/settings"),
+  updateSettings: (body: { encrypt_new_uploads: boolean }) =>
+    request<SettingsDTO>("/settings", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 };
 
 export function mediaLabel(t: string): string {

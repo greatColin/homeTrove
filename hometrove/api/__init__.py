@@ -19,6 +19,7 @@ from hometrove.api.deps import current_principal
 from hometrove.api.middleware import AuthMiddleware
 from hometrove.api.routes import (
     albums,
+    app_settings,
     assets,
     facets,
     folders,
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(albums.router)
     app.include_router(places.router)
     app.include_router(upload_presets.router)
+    app.include_router(app_settings.router)
     app.include_router(vault.router)
     # Public share endpoints are registered last but before the SPA fallback.
     # They live inside assets.router to keep the prefix surface consistent.

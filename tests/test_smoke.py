@@ -22,6 +22,11 @@ def tmp_data_dir(tmp_path: Path, monkeypatch):
     reset_settings_cache()
     from hometrove.db import reset_engine
     reset_engine()
+    # The vault singleton is a module-level object so it leaks across
+    # tests. Reset it so the next ``create_app``'s lifespan re-hydrates
+    # cleanly from the new (empty) DB.
+    from hometrove.vault.state import _reset_for_test
+    _reset_for_test()  # noqa: SLF001
     # In unit tests we exercise the mock face pipeline (``mock.faces`` ->
     # ``face.match``), so simulate "insightface unavailable" to force
     # ``face.detect`` to skip and let ``face.match`` fall back to the mocks.
@@ -29,6 +34,7 @@ def tmp_data_dir(tmp_path: Path, monkeypatch):
     yield tmp_path / "data"
     reset_settings_cache()
     reset_engine()
+    _reset_for_test()  # noqa: SLF001
 
 
 def make_png(path: Path, w: int = 32, h: int = 24) -> None:
@@ -1958,6 +1964,273 @@ def test_upload_ingest_with_plugin_ids(tmp_data_dir, tmp_path: Path):
             enqueued = {j.plugin_id for j in jobs}
             assert "thumbnail" in enqueued
             assert "exif" in enqueued
+
+
+# ---------------------------------------------------------------------------
+# Global encryption toggle (Settings page)
+# ---------------------------------------------------------------------------
+
+
+def _seed_configured_vault(pwd: str = "settings-vault-pwd"):
+    """Test helper: put the in-memory vault into LOCKED state with a master password set.
+
+    Returns the freshly derived subkeys so callers can force-unlock if
+    they want to test the success path. Mirrors the helpers in
+    test_vault.py but kept inline here to avoid cross-module coupling.
+    """
+    import json as _json
+
+    from hometrove.db import session_scope
+    from hometrove.models import VaultState as _VaultStateRow
+    from hometrove.vault.crypto import aes_key_wrap, derive_raw_master_key, derive_subkeys
+    from hometrove.vault.state import _enable_for_test, _reset_for_test
+
+    _reset_for_test()  # noqa: SLF001  wipe any leftover state from prior tests
+    _enable_for_test()  # noqa: SLF001
+    salt = os.urandom(16)
+    params = {"m": 64 * 1024, "t": 2, "p": 1}
+    raw = derive_raw_master_key(pwd, salt, params)
+    sub = derive_subkeys(raw)
+    wrapped = aes_key_wrap(bytes(sub.kek), raw)
+    with session_scope() as s:
+        s.add(_VaultStateRow(
+            id=1,
+            kdf_salt=salt,
+            kdf_params_json=_json.dumps(params, sort_keys=True),
+            wrapped_master_key=wrapped,
+            version=1,
+        ))
+    return sub
+
+
+def _force_unlock(sub):
+    """Test helper: pin the in-memory state to a freshly-derived subkey set."""
+    from hometrove.vault.state import _force_unlock_for_test
+
+    _force_unlock_for_test(sub)  # noqa: SLF001
+
+
+def _make_png(p: Path, color: tuple[int, int, int] = (10, 20, 30)) -> None:
+    """Write a tiny valid PNG to ``p`` for upload tests."""
+    from PIL import Image  # type: ignore
+
+    Image.new("RGB", (24, 24), color).save(p)
+
+
+def _do_upload(client, png_path: Path, filename: str = "x.png") -> dict:
+    """Create a session, upload one chunk, finalize, ingest. Returns the ingest JSON."""
+    r = client.post("/api/uploads", json={"filename": filename, "size": png_path.stat().st_size})
+    r.raise_for_status()
+    sid = r.json()["upload_id"]
+    client.put(
+        f"/api/uploads/{sid}/chunks/0",
+        files={"file": (filename, png_path.read_bytes(), "image/png")},
+    )
+    client.post(f"/api/uploads/{sid}/complete", json={})
+    r = client.post(f"/api/uploads/{sid}/ingest")
+    r.raise_for_status()
+    return r.json()
+
+
+def test_settings_endpoint_default_state(tmp_data_dir):
+    """GET /api/settings returns the toggle in its default (off) state."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/settings")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["encrypt_new_uploads"] is False
+        # Vault is not configured in a fresh tmp_data_dir.
+        assert body["vault_configured"] is False
+        assert body["vault_unlocked"] is False
+
+
+def test_settings_toggle_persists(tmp_data_dir, monkeypatch):
+    """PUT /api/settings flips the toggle, GET reflects it."""
+    monkeypatch.setenv("HOMETROVE_VAULT_ENABLED", "true")
+    from hometrove.config import reset_settings_cache
+    reset_settings_cache()
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.app_settings import is_encrypt_new_uploads_enabled
+
+    _seed_configured_vault()
+
+    app = create_app()
+    with TestClient(app) as c:
+        # Pre-condition: off.
+        r = c.get("/api/settings")
+        assert r.json()["encrypt_new_uploads"] is False
+        assert r.json()["vault_configured"] is True
+
+        # Flip on.
+        r = c.put("/api/settings", json={"encrypt_new_uploads": True})
+        assert r.status_code == 200
+        assert r.json()["encrypt_new_uploads"] is True
+
+        # GET reflects it.
+        r = c.get("/api/settings")
+        assert r.json()["encrypt_new_uploads"] is True
+
+        # Flip off.
+        r = c.put("/api/settings", json={"encrypt_new_uploads": False})
+        assert r.status_code == 200
+        assert r.json()["encrypt_new_uploads"] is False
+
+    # Persisted across app restarts.
+    assert is_encrypt_new_uploads_enabled() is False
+
+
+def test_settings_toggle_refused_when_vault_unconfigured(tmp_data_dir):
+    """PUT refuses to enable encryption when the vault has no master key."""
+    from hometrove.vault.state import _reset_for_test
+    _reset_for_test()  # noqa: SLF001  previous tests may have left LOCKED state
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.app_settings import is_encrypt_new_uploads_enabled
+
+    app = create_app()
+    with TestClient(app) as c:
+        # Confirm pre-condition: vault is not configured.
+        assert c.get("/api/settings").json()["vault_configured"] is False
+
+        r = c.put("/api/settings", json={"encrypt_new_uploads": True})
+        assert r.status_code == 409
+        assert "not configured" in r.json()["detail"].lower()
+
+    # The toggle was NOT persisted.
+    assert is_encrypt_new_uploads_enabled() is False
+
+
+def test_settings_toggle_refused_when_vault_disabled_env(tmp_data_dir, monkeypatch):
+    """When HOMETROVE_VAULT_ENABLED=false the toggle stays rejected."""
+    monkeypatch.setenv("HOMETROVE_VAULT_ENABLED", "false")
+    from hometrove.config import reset_settings_cache
+    reset_settings_cache()
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.put("/api/settings", json={"encrypt_new_uploads": True})
+        assert r.status_code == 400
+        assert "vault is disabled" in r.json()["detail"].lower()
+
+
+def test_global_encryption_toggle_forces_encrypted_upload(
+    tmp_data_dir, tmp_path: Path, monkeypatch
+):
+    """Flipping the toggle ON makes the next upload encrypted by default."""
+    monkeypatch.setenv("HOMETROVE_VAULT_ENABLED", "true")
+    from hometrove.config import reset_settings_cache
+    reset_settings_cache()
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    sub = _seed_configured_vault()
+    _force_unlock(sub)
+
+    app = create_app()
+    with TestClient(app) as c:
+        # Flip the toggle on.
+        r = c.put("/api/settings", json={"encrypt_new_uploads": True})
+        assert r.status_code == 200
+
+        # Upload WITHOUT specifying the ``encrypted`` field.
+        p = tmp_path / "g.png"
+        _make_png(p, (1, 2, 3))
+
+        r = c.post("/api/uploads", json={"filename": "g.png", "size": p.stat().st_size})
+        assert r.status_code == 200, r.text
+        assert r.json()["encrypted"] is True
+        sid = r.json()["upload_id"]
+        c.put(
+            f"/api/uploads/{sid}/chunks/0",
+            files={"file": ("g.png", p.read_bytes(), "image/png")},
+        )
+        c.post(f"/api/uploads/{sid}/complete", json={})
+        r = c.post(f"/api/uploads/{sid}/ingest")
+        assert r.status_code == 200, r.text
+        assert r.json()["encrypted"] is True
+        aid = int(r.json()["asset_id"])
+
+        with session_scope() as s:
+            a = s.get(Asset, aid)
+            assert a.encrypted_path is not None, "asset should be encrypted"
+
+
+def test_global_encryption_toggle_opt_out_per_request(
+    tmp_data_dir, tmp_path: Path, monkeypatch
+):
+    """Even with the toggle ON, the client can opt out via encrypted=false."""
+    monkeypatch.setenv("HOMETROVE_VAULT_ENABLED", "true")
+    from hometrove.config import reset_settings_cache
+    reset_settings_cache()
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Asset
+
+    sub = _seed_configured_vault()
+    _force_unlock(sub)
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.put("/api/settings", json={"encrypt_new_uploads": True})
+        assert r.status_code == 200
+
+        p = tmp_path / "o.png"
+        _make_png(p, (4, 5, 6))
+
+        r = c.post(
+            "/api/uploads",
+            json={"filename": "o.png", "size": p.stat().st_size, "encrypted": False},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["encrypted"] is False
+        sid = r.json()["upload_id"]
+        c.put(
+            f"/api/uploads/{sid}/chunks/0",
+            files={"file": ("o.png", p.read_bytes(), "image/png")},
+        )
+        c.post(f"/api/uploads/{sid}/complete", json={})
+        r = c.post(f"/api/uploads/{sid}/ingest")
+        assert r.status_code == 200, r.text
+        aid = int(r.json()["asset_id"])
+
+        with session_scope() as s:
+            a = s.get(Asset, aid)
+            assert a.encrypted_path is None, "explicit opt-out should be plaintext"
+
+
+def test_global_encryption_toggle_blocks_unlocked_upload(
+    tmp_data_dir, tmp_path: Path, monkeypatch
+):
+    """Toggle ON + vault locked → POST /api/uploads returns 423."""
+    monkeypatch.setenv("HOMETROVE_VAULT_ENABLED", "true")
+    from hometrove.config import reset_settings_cache
+    reset_settings_cache()
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_configured_vault()  # NOTE: do NOT force-unlock
+
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.put("/api/settings", json={"encrypt_new_uploads": True})
+        assert r.status_code == 200
+
+        p = tmp_path / "l.png"
+        _make_png(p, (7, 8, 9))
+
+        r = c.post("/api/uploads", json={"filename": "l.png", "size": p.stat().st_size})
+        assert r.status_code == 423, r.text
+        assert "locked" in r.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
