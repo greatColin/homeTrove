@@ -77,6 +77,23 @@ hometrove serve
 
 前端由 API Server 直接托管（`web/dist` 构建产物）——浏览器打开 `http://127.0.0.1:8080` 即可使用，无需单独的 Web 服务。`web/dist` 已随仓库提交，克隆后即可直接运行，无需 Node 环境。
 
+### 4.1 Windows 用户（`scripts/init.bat` + `scripts/start.bat`）
+
+仓库提供两个 Windows 批处理脚本，封装上面的 CLI 步骤：
+
+- `scripts\init.bat` — 首次运行前执行：跑迁移 + 设置 vault 主密码（交互式或读 `HOMETROVE_VAULT_PASSWORD` 环境变量）。幂等，升级后也可以再跑一次。
+- `scripts\start.bat` — 每次启动服务（API + worker 同进程，即 `hometrove serve`）。
+
+```cmd
+:: 1. 首次运行：迁移 + 设置 vault 密码
+scripts\init.bat
+
+:: 2. 启动服务
+scripts\start.bat
+```
+
+两个脚本都会默认把数据目录放在仓库下的 `var\`，可通过设置 `HOMETROVE_DATA_DIR` / `HOMETROVE_MEDIA_ROOTS` 等环境变量覆盖。`init.bat` 的 vault 步骤可选跳过（输 `S`），事后通过 `POST /api/vault/setup` 补做。
+
 ## 5. 执行第一次扫描
 
 启动后，媒体目录中的文件不会自动入库，需要手动触发一次扫描：
