@@ -406,8 +406,11 @@ def build_router(manager: UploadManager) -> APIRouter:
                 # cipher to disk; the in-memory asset row is updated below.
                 with _scope() as db:
                     now = int(time.time())
+                    # Use a vault-prefixed path so the unique constraint is
+                    # satisfied while still signalling that the payload lives in
+                    # the encrypted vault.
                     asset = _Asset(
-                        path="",
+                        path=f"vault\0{rel_path}",
                         filename=s.filename,
                         media_root="vault",
                         content_hash=prefix,

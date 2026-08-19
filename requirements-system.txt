@@ -1,0 +1,27 @@
+# HomeTrove system dependencies (Debian/Ubuntu)
+#
+# These packages are required by the Python wheels installed via pip:
+# - OpenCV (cv2) needs libxcb and OpenGL libraries for video/image decoding.
+# - PyAV and PySceneDetect rely on FFmpeg libraries at runtime.
+#
+# Install with:
+#
+#   sudo apt-get update
+#   sudo apt-get install -y $(grep -v '^#' requirements-system.txt | xargs)
+#
+# On other distributions, install the equivalent packages:
+#   - libxcb1, libxcb-shape0, libxcb-xfixes0
+#   - libgl1
+#   - libglib2.0-0
+#   - libsm6, libxext6, libxrender1
+#   - libgomp1
+
+libxcb1
+libxcb-shape0
+libxcb-xfixes0
+libgl1
+libglib2.0-0
+libsm6
+libxext6
+libxrender1
+libgomp1

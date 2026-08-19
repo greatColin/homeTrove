@@ -19,7 +19,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from hometrove.plugins.api import AssetLike, Cost, MediaType, PluginContext
+from hometrove.plugins.api import AssetLike, Cost, MediaType, PluginContext, resolve_asset_path
 from hometrove.plugins.base import BasePlugin
 
 
@@ -163,37 +163,39 @@ class BasicInfoPlugin(BasePlugin):
         return Cost(seconds=0.02, device="cpu")
 
     def run(self, asset: AssetLike, ctx: PluginContext) -> dict:
-        # Reconstruct the on-disk path from ``media_root`` + relative portion,
-        # since the database column may include the ``\0`` separator we use
-        # for uniqueness keys.
-        raw = asset.path
-        if "\0" in raw:
-            _root, rel = raw.split("\0", 1)
-            path = Path(asset.media_root) / rel
-        elif Path(raw).is_absolute():
-            path = Path(raw)
-        else:
-            path = Path(asset.media_root) / raw
+        # Prefer the shared resolver so encrypted assets (with an empty path
+        # column) are transparently decrypted when the vault is unlocked.
+        path = resolve_asset_path(asset)
+        if path is None:
+            # Fallback to the legacy reconstruction for non-file layouts.
+            raw = asset.path
+            if "\0" in raw:
+                _root, rel = raw.split("\0", 1)
+                path = Path(asset.media_root) / rel
+            elif Path(raw).is_absolute():
+                path = Path(raw)
+            else:
+                path = Path(asset.media_root) / raw
 
         params: BasicInfoPlugin.ParamsModel = ctx.params  # type: ignore[assignment]
 
         size = asset.size_bytes
-        if size is None:
+        if size is None and path is not None:
             try:
                 size = path.stat().st_size
             except OSError:
                 size = None
 
         mtime = asset.mtime
-        try:
-            if mtime is None:
+        if mtime is None and path is not None:
+            try:
                 mtime = int(path.stat().st_mtime)
-        except OSError:
-            mtime = None
+            except OSError:
+                mtime = None
 
         width: int | None = None
         height: int | None = None
-        if params.read_image_dimensions and asset.media_type == MediaType.IMAGE.value:
+        if params.read_image_dimensions and asset.media_type == MediaType.IMAGE.value and path is not None:
             width, height = _read_image_dimensions(path)
 
         # Video metadata: deliberately left as None unless the operator
@@ -201,8 +203,12 @@ class BasicInfoPlugin(BasePlugin):
         # explicitly so the schema is stable.
         duration_sec: float | None = None
 
+        # Encrypted assets are decrypted to temp files; keep the reported
+        # name stable by using the original filename when available.
+        name = asset.filename or (path.name if path else "")
+
         return {
-            "name": path.name,
+            "name": name,
             "media_type": asset.media_type,
             "size_bytes": size,
             "mtime": mtime,

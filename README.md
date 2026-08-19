@@ -41,7 +41,17 @@ HomeTrove（家藏）是一个跑在你自己 NAS 上的家庭影像（照片 + 
 
 - **Python 3.12+**
 - 一个包含照片 / 视频的目录（下称 `MEDIA_DIR`）
+- 系统依赖（OpenCV / PyAV 运行时库）：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libxcb1 libxcb-shape0 libxcb-xfixes0 libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1
+```
+
+包名已整理在 `requirements-system.txt`。若缺少这些库，依赖 `cv2` 的插件会返回 `skipped`。
+
 - （可选）Node.js 20+：只有修改前端时才需要；仓库已提交 `web/dist` 构建产物，直接运行后端即可使用 Web UI
+- （可选）`hometrove-cli`：面向 Agent 的 HTTP 转发客户端，用法见 `docs/INSTALL.md` §11
 
 ### 1. 安装
 

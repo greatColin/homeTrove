@@ -180,6 +180,7 @@ def test_resolve_content_path_rejects_escape(tmp_path: Path):
 
 def test_vault_state_lifecycle(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HOMETROVE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("HOMETROVE_VAULT_ENABLED", "off")
     from hometrove.config import reset_settings_cache
     reset_settings_cache()
     from hometrove.vault.state import (
@@ -187,11 +188,15 @@ def test_vault_state_lifecycle(tmp_path: Path, monkeypatch):
         get_state,
         is_unlocked,
         lock,
+        set_disabled,
         setup_with_password,
         unlock_with_password,
     )
     from hometrove.vault.crypto import derive_subkeys
 
+    # Reset the global singleton because earlier tests may have left it
+    # in a different state.
+    set_disabled()
     assert get_state().status == VaultStatus.DISABLED
     assert not is_unlocked()
 
@@ -431,7 +436,10 @@ def test_vault_api_setup_unlock_lock_flow(tmp_data_dir, monkeypatch):
         assert any(k in c.cookies for k in ("vault_session", "hometrove_vault"))
 
 
-def test_vault_disabled_endpoints_return_400(tmp_data_dir):
+def test_vault_disabled_endpoints_return_400(tmp_data_dir, monkeypatch):
+    monkeypatch.setenv("HOMETROVE_VAULT_ENABLED", "off")
+    from hometrove.config import reset_settings_cache
+    reset_settings_cache()
     from fastapi.testclient import TestClient
     from hometrove.api import create_app
 
@@ -499,7 +507,7 @@ def test_encrypted_upload_creates_asset_with_encrypted_path(
 
         with session_scope() as s:
             a = s.get(Asset, aid)
-            assert a.encrypted_path and not a.path
+            assert a.encrypted_path and a.path.startswith("vault\0")
             assert a.media_type == "image"
         r = c.get(f"/api/assets/{aid}/file")
         assert r.status_code == 200

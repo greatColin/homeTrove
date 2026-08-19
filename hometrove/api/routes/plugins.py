@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from hometrove.auth import Principal
+from hometrove.config import get_settings
 from hometrove.db import get_db
 from hometrove.models import Asset, Job, PluginConfig
+from hometrove.plugins.api import AssetLike, PluginContext
+from hometrove.plugins.builtin.basic_info import classify
 from hometrove.plugins.registry import REGISTRY
 from hometrove.scanner import enqueue_pending
+from hometrove.api.deps import require_auth
 
 router = APIRouter(prefix="/api", tags=["plugins"])
 
@@ -219,3 +225,91 @@ def rerun_selected(
         media_types=sorted(plugin.supported_media) or None,
     )
     return {"ok": True, "dropped": dropped, "enqueued": enqueued}
+
+
+# ---------------------------------------------------------------------------
+# Agent CLI: synchronous plugin test against an uploaded file. The result is
+# NOT persisted to the library; it is meant for plugin authors to iterate.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/plugins/{plugin_id}/test")
+def test_plugin(
+    plugin_id: str,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_db),
+    _principal: Principal = Depends(require_auth),
+):
+    """Run a plugin synchronously against an uploaded file and return its raw JSON.
+
+    This endpoint is authenticated and intended for the ``hometrove-cli``
+    agent tool. It writes the file to a temporary path, constructs an
+    ``AssetLike``, and calls ``plugin.run()`` directly. Nothing is written
+    to ``assets`` or ``plugin_results``.
+    """
+    from hometrove.auth import Principal
+
+    plugin = REGISTRY.get(plugin_id) if plugin_id in {
+        p.id for p in REGISTRY.list()
+    } else None
+    if plugin is None:
+        raise HTTPException(404, "unknown plugin")
+
+    import tempfile
+    import time
+
+    suffix = f"_{file.filename or 'upload'}"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        data = file.file.read()
+        tmp.write(data)
+        tmp_path = Path(tmp.name)
+
+    try:
+        media_type = classify(tmp_path).value
+        if media_type not in plugin.supported_media:
+            raise HTTPException(
+                400,
+                f"plugin {plugin_id} does not support media type {media_type}; "
+                f"supports {', '.join(sorted(plugin.supported_media))}",
+            )
+
+        asset = AssetLike(
+            id=0,
+            path=str(tmp_path),
+            media_root="cli-test",
+            media_type=media_type,
+            size_bytes=len(data),
+            mtime=int(time.time()),
+        )
+
+        # Resolve params from plugin config when available, else defaults.
+        config_row = session.get(PluginConfig, plugin_id)
+        params: dict = {}
+        if config_row is not None and config_row.params_json:
+            try:
+                params = json.loads(config_row.params_json)
+            except json.JSONDecodeError:
+                params = {}
+        try:
+            resolved_params = plugin.ParamsModel.model_validate(params)
+        except Exception as exc:
+            raise HTTPException(422, f"invalid stored params: {exc}")
+
+        ctx = PluginContext(
+            asset=asset,
+            params=resolved_params,
+            db=session,
+            data_dir=get_settings().resolved_data_dir(),
+        )
+        start = time.time()
+        result = plugin.run(asset, ctx)
+        elapsed_ms = int((time.time() - start) * 1000)
+        return {
+            "plugin_id": plugin_id,
+            "plugin_version": plugin.version,
+            "media_type": media_type,
+            "elapsed_ms": elapsed_ms,
+            "result": result,
+        }
+    finally:
+        tmp_path.unlink(missing_ok=True)

@@ -70,6 +70,42 @@ class PassthroughAuthBackend:
         return self._principal
 
 
+class TokenAuthBackend:
+    """API-key backend for the agent CLI.
+
+    Expects ``Authorization: Bearer <token>`` and compares it against the
+    configured ``cli_api_key``. The token is compared in constant time to
+    mitigate timing attacks.
+    """
+
+    def __init__(self, api_key: str | None = None) -> None:
+        self._api_key = api_key
+
+    def authenticate(self, request: object) -> Principal:
+        import hmac
+
+        from starlette.requests import Request
+
+        if not isinstance(request, Request):
+            return Principal.local()
+        if self._api_key is None:
+            return Principal.local()
+        header = request.headers.get("authorization", "")
+        if not header.lower().startswith("bearer "):
+            return Principal.local()
+        supplied = header[7:].strip()
+        if len(supplied) != len(self._api_key):
+            return Principal.local()
+        if hmac.compare_digest(supplied, self._api_key):
+            return Principal(
+                id="cli",
+                name="agent-cli",
+                is_authenticated=True,
+                scopes=frozenset({"cli"}),
+            )
+        return Principal.local()
+
+
 def build_auth_backend(
     settings: object | None = None,
     *,
@@ -81,14 +117,29 @@ def build_auth_backend(
     can pass either a real ``hometrove.config.Settings`` or any test double.
     Unknown names fall back to ``passthrough`` so a typo can't take the API
     down.
+
+    When ``cli_api_key`` is configured, the default backend becomes token
+    auth so that the agent CLI can authenticate; ``auth_backend`` can still
+    be set to ``passthrough`` to force open access.
     """
 
     name = getattr(settings, "auth_backend", "passthrough") or "passthrough"
     name = str(name).strip().lower()
+    api_key = getattr(settings, "cli_api_key", None)
     registry: Mapping[str, AuthBackend] = overrides or _BACKENDS
     backend = registry.get(name)
+    # Token auth needs the configured key; never use the empty fallback in
+    # ``_BACKENDS`` when a real key is available.
+    if name == "token" and api_key:
+        return TokenAuthBackend(api_key=api_key)
+    # Auto-enable token auth when an agent CLI key is present and the operator
+    # did not explicitly request passthrough.
+    if api_key and name != "passthrough":
+        return TokenAuthBackend(api_key=api_key)
     if backend is not None:
         return backend
+    if api_key:
+        return TokenAuthBackend(api_key=api_key)
     return PassthroughAuthBackend()
 
 
@@ -99,4 +150,5 @@ def available_backends() -> Iterable[str]:
 
 _BACKENDS: dict[str, AuthBackend] = {
     "passthrough": PassthroughAuthBackend(),
+    "token": TokenAuthBackend(),
 }

@@ -52,6 +52,8 @@ def run_one(job_id: int, session: Session) -> None:
         size_bytes=asset.size_bytes,
         mtime=asset.mtime,
         content_hash_prefix=asset.content_hash,
+        encrypted_path=asset.encrypted_path,
+        filename=asset.filename,
     )
     ctx = PluginContext(asset=asset_like, params=params, db=session, data_dir=get_settings().resolved_data_dir())
 

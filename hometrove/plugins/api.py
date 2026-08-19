@@ -38,6 +38,30 @@ class AssetLike(BaseModel):
     size_bytes: Optional[int] = None
     mtime: Optional[int] = None
     content_hash_prefix: Optional[str] = None
+    encrypted_path: Optional[str] = None
+    filename: Optional[str] = None
+
+
+def _decrypt_asset_to_temp(asset: AssetLike) -> Optional[Path]:
+    """If the asset is encrypted and the vault is unlocked, decrypt to a temp file."""
+
+    enc_path = getattr(asset, "encrypted_path", None) if hasattr(asset, "encrypted_path") else None
+    if not enc_path:
+        return None
+    from hometrove.vault import is_unlocked
+
+    if not is_unlocked():
+        return None
+    from hometrove.vault.read import read_asset_bytes
+
+    data, _ = read_asset_bytes(asset)
+    import tempfile, atexit
+
+    fd, tmp = tempfile.mkstemp(suffix=".bin", prefix=f"hometrove-asset-{asset.id}-")
+    os.write(fd, data)
+    os.close(fd)
+    atexit.register(lambda p=tmp: Path(p).unlink(missing_ok=True))
+    return Path(tmp)
 
 
 def resolve_asset_path(asset: AssetLike) -> Optional[Path]:
@@ -55,23 +79,15 @@ def resolve_asset_path(asset: AssetLike) -> Optional[Path]:
     """
     raw = asset.path
     if not raw:
-        enc_path = getattr(asset, "encrypted_path", None) if hasattr(asset, "encrypted_path") else None
-        if enc_path:
-            from hometrove.vault import is_unlocked
-            if is_unlocked():
-                from hometrove.vault.read import read_asset_bytes
-                data, _ = read_asset_bytes(asset)
-                import tempfile, atexit
-                fd, tmp = tempfile.mkstemp(suffix=".bin", prefix=f"hometrove-asset-{asset.id}-")
-                os.write(fd, data)
-                os.close(fd)
-                atexit.register(lambda: Path(tmp).unlink(missing_ok=True))
-                return Path(tmp)
-        return None
+        return _decrypt_asset_to_temp(asset)
     if "\0" in raw:
         kind, _, rest = raw.partition("\0")
         if kind == "uploads":
             src = Path(rest)
+        elif kind == "vault":
+            # Encrypted vault assets keep their plaintext path in
+            # ``encrypted_path``; use the encrypted resolver.
+            return _decrypt_asset_to_temp(asset)
         else:
             src = Path(asset.media_root) / rest
     elif Path(raw).is_absolute():

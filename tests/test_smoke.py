@@ -2276,8 +2276,15 @@ def test_readonly_run_for_settings_off_is_silent(caplog):
 
 def test_lifespan_runs_readonly_probe(tmp_data_dir, caplog, monkeypatch):
     """Booting the API runs the probe once per process via lifespan."""
+    import os
+
     from fastapi.testclient import TestClient
     from hometrove.api import create_app
+
+    # When running as root the kernel bypasses DAC permission checks, so the
+    # probe intentionally reports "DAC bypassed" instead of "WRITABLE".
+    if os.getuid() == 0:
+        pytest.skip("read-only probe does not emit WRITABLE warning when running as root")
 
     root = tmp_data_dir.parent / "fake_media"
     root.mkdir()

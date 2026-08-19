@@ -36,6 +36,7 @@ dev = [
 
 [project.scripts]
 hometrove = "hometrove.cli:main"
+hometrove-cli = "hometrove.cli_agent:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -47,6 +48,9 @@ packages = ["hometrove"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: tests that start a real server process",
+]
 
 [tool.hometrove.plugins]
 # M0: only the basic.info plugin is built in.

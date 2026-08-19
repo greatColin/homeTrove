@@ -73,21 +73,24 @@ Entries discovered by the Agent during task execution should follow this format:
   - `_ensure_lock_glyph_np` in `vault/placeholders.py` line 122 had this issue — fixed in `7aa35f0`
 
 [Project Knowledge Summary]
-- Date: 2026-08-14
+- Date: 2026-08-19
 - Context: Vault session and cookie behavior
 - Category: Environment Configuration
 - Instructions:
   - Vault session cookie: `hometrove_vault`, HttpOnly + SameSite=Strict + TTL 7 days (configurable via `HOMETROVE_VAULT_SESSION_TTL_SECONDS`)
   - Process restart invalidates all vault sessions (session stored in-process, not Redis)
-  - Vault requires `HOMETROVE_VAULT_ENABLED=true` env var to activate
+  - Vault is enabled by default (`HOMETROVE_VAULT_ENABLED=true`); set `HOMETROVE_VAULT_ENABLED=off` to disable
+  - Fresh servers start in `initialized` state; run `hometrove-cli vault setup --password <pwd> --confirm <pwd>` before encrypted uploads
+  - Encrypted assets store `path` as `vault\0{encrypted_path}` so the unique constraint is satisfied
 
 [Project Knowledge Summary]
-- Date: 2026-08-14
+- Date: 2026-08-19
 - Context: Asset vs AssetLike distinction in vault code
 - Category: Build Methods
 - Instructions:
-  - `AssetLike` is a Pydantic model without `encrypted_path` field; use `hasattr(asset, 'encrypted_path') and asset.encrypted_path` to check encryption status without triggering Pydantic validation errors
-  - `Asset` model (SQLAlchemy) has `encrypted_path` column; `is_asset_encrypted()` in `vault/read.py` requires an Asset instance
+  - `AssetLike` now includes `encrypted_path` and `filename` fields so plugins can resolve encrypted assets transparently
+  - `resolve_asset_path` in `plugins/api.py` decrypts encrypted assets to a temp file (cleanup via `atexit`) when vault is unlocked
+  - `is_asset_encrypted()` in `vault/read.py` accepts any object with a truthy `encrypted_path` attribute
 
 [Project Knowledge Summary]
 - Date: 2026-08-14
@@ -100,11 +103,31 @@ Entries discovered by the Agent during task execution should follow this format:
   - Old plaintext assets remain readable when vault is enabled
 
 [Project Knowledge Summary]
-- Date: 2026-08-14
+- Date: 2026-08-19
 - Context: Running the project
 - Category: Operations & Deployment
 - Instructions:
-  - Backend: `HOMETROVE_VAULT_ENABLED=true hometrove serve` (or without env var for default behavior)
+  - Backend: `hometrove serve` (vault encryption is enabled by default)
   - Frontend dev: `cd web && npm run dev` (or use deploy-website skill for preview)
-  - Run tests: `python3 -m pytest tests/ -q`
-  - Preview service running on port 8080
+  - System dependencies for OpenCV / PyAV are listed in `requirements-system.txt`:
+    `libxcb1 libxcb-shape0 libxcb-xfixes0 libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1`
+  - Run tests: `PYTHONPATH=/workspace python3 -m pytest tests/ -q`
+  - Full suite result: 170 passed, 1 skipped (root-only read-only probe skip), ~4 min
+  - Environment Python is 3.11.2 but project requires >=3.12; workaround is `PYTHONPATH=/workspace python3 -m hometrove.cli_agent ...`
+
+[Project Knowledge Summary]
+- Date: 2026-08-19
+- Context: Added homeTrove agent CLI (`hometrove-cli`)
+- Category: Operations & Deployment
+- Instructions:
+  - CLI entry point: `python3 -m hometrove.cli_agent <subcommand>` (or `hometrove-cli` after `pip install -e .`)
+  - Required env vars: `HOMETROVE_CLI_HOST` and `HOMETROVE_CLI_API_KEY`
+  - Server enables token auth automatically when `HOMETROVE_CLI_API_KEY` is set
+  - Common commands:
+    - `hometrove-cli endpoints` / `describe <cmd>`
+    - `hometrove-cli upload <file> [--plugins p1,p2] [--no-encrypted]`
+    - `hometrove-cli search <query> [--limit N]` and `search --mode filter --tag ...`
+    - `hometrove-cli test-plugin <plugin_id> <file>`
+    - `hometrove-cli vault status/setup/unlock/lock`
+  - Encrypted uploads require the server vault to be set up and unlocked; the CLI keeps the unlock cookie in-memory only
+  - CLI tests live in `tests/test_agent_cli.py`; integration tests start a real server subprocess

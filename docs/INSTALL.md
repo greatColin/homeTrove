@@ -6,10 +6,23 @@ M0 是「扫描 → 入库 → 浏览」的最小闭环。本文面向首次部�
 
 ## 1. 前置条件
 
-- Python 3.11+
+- Python 3.12+
 - 一个包含照片 / 视频的目录（下称 `MEDIA_DIR`）
+- 系统依赖（OpenCV / PyAV 运行时库）：
 
-后端无额外系统依赖（M0 的 `basic.info` 插件零外部库，仅用标准库解析图片宽高）。
+```bash
+# Debian / Ubuntu
+sudo apt-get update
+sudo apt-get install -y libxcb1 libxcb-shape0 libxcb-xfixes0 libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1
+```
+
+包名已整理在 `requirements-system.txt`，可直接：
+
+```bash
+sudo apt-get install -y $(grep -v '^#' requirements-system.txt | xargs)
+```
+
+> 若跳过系统依赖，`basic.scene_detect` 等依赖 `cv2` 的插件会返回 `skipped: scenedetect not installed`，测试 `test_scene_detect_finds_cuts` 也会失败。
 
 ## 2. 安装 Python 包
 
@@ -142,7 +155,44 @@ npm run build   # 产出 web/dist，API Server 重启后生效
 
 若不需要改前端，运行阶段完全不需要 Node。
 
-## 11. 常见问题
+## 11. Agent CLI（可选）
+
+HomeTrove 提供一个面向自动化/LLM Agent 的命令行客户端 `hometrove-cli`，它通过 HTTP 转发调用后端 API，适合远程脚本或 Agent 工具链集成。
+
+启用服务端 token 认证：
+
+```bash
+export HOMETROVE_CLI_API_KEY=changeme
+hometrove serve
+```
+
+客户端使用：
+
+```bash
+export HOMETROVE_CLI_HOST=http://127.0.0.1:8080
+export HOMETROVE_CLI_API_KEY=changeme
+
+# 查看可用命令
+hometrove-cli endpoints
+hometrove-cli describe search
+
+# 上传（默认加密写入 vault）
+hometrove-cli upload ./photo.jpg --plugins basic.info,thumbnail
+
+# 搜索
+hometrove-cli search "sunset beach" --limit 5
+
+# 插件快速测试
+hometrove-cli test-plugin basic.info ./photo.jpg
+
+# vault 管理
+hometrove-cli vault setup --password <pwd> --confirm <pwd>
+hometrove-cli vault unlock --password <pwd>
+```
+
+> 若服务端 vault 已默认启用，上传前需先执行 `vault setup` / `unlock`，否则加密上传会返回 423。
+
+## 12. 常见问题
 
 - **`hometrove: command not found`**：确认已 `pip install -e .`，且该命令在你的 PATH 中（通常 `~/.local/bin`）。
 - **扫描后 `jobs` 一直是 pending**：确认服务进程在运行（`hometrove serve` 或 `hometrove worker`）。

@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from hometrove.auth import Principal, build_auth_backend
+from hometrove.auth import Principal, TokenAuthBackend, build_auth_backend
 from hometrove.config import get_settings
 from hometrove.db import engine, session_scope
 import hometrove.plugins.builtin  # noqa: F401  registers basic.info + mock plugins
@@ -123,7 +123,12 @@ def create_app() -> FastAPI:
     # request is resolved to a ``Principal`` (default = passthrough local).
     # ``app.state.auth_backend`` is left open for tests to monkeypatch a
     # counting/stub backend without rebuilding the app.
-    app.state.auth_backend = build_auth_backend(settings)
+    # Agent CLI: when ``cli_api_key`` is set, force token auth so the CLI key
+    # is honored even if the default ``auth_backend`` is ``passthrough``.
+    if settings.cli_api_key and settings.auth_backend == "passthrough":
+        app.state.auth_backend = TokenAuthBackend(api_key=settings.cli_api_key)
+    else:
+        app.state.auth_backend = build_auth_backend(settings)
     app.add_middleware(AuthMiddleware, backend=app.state.auth_backend)
 
     # Order matters: everything below must be registered before the SPA

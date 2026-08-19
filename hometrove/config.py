@@ -39,12 +39,20 @@ class Settings(BaseSettings):
     auth_cookie_name: str = "hometrove_session"
     auth_session_ttl_seconds: int = 7 * 24 * 3600
 
+    # Agent CLI authentication. When ``cli_api_key`` is set, the backend
+    # switches to token auth so that ``hometrove-cli`` can authenticate with
+    # ``Authorization: Bearer <key>``.
+    cli_api_key: str | None = None
+
     # v2 content encryption (vault mode). When ``vault_enabled`` is true
     # the API gates encrypted-asset reads on vault unlock; the scanner
     # additionally honours ``vault_auto_import`` to copy new files into
     # the vault directory.  ``vault_session_ttl_seconds`` controls how
     # long the unlock cookie persists between requests.
-    vault_enabled: bool = False
+    #
+    # Agent CLI use-case: vault is enabled by default so uploads are
+    # encrypted at rest unless the operator explicitly disables it.
+    vault_enabled: bool = True
     vault_auto_import: bool = False
     vault_session_ttl_seconds: int = 7 * 24 * 3600
     vault_cookie_name: str = "hometrove_vault"
