@@ -21,7 +21,7 @@
    - 确认 `hometrove/plugins/registry.py` 在 `start_all_enabled` 阶段跳过 stub（按 §1 中"按类别过滤"判断）
    - 关联需求：Out of Scope（不迁移）
 
-- [ ] 3. InsightFaceRuntime 共享单例（引用计数）
+- [x] 3. InsightFaceRuntime 共享单例（引用计数）
    - 新建 `hometrove/insightface_runtime.py`
      - `acquire(model_name="buffalo_l") -> FaceAnalysis`：线程安全首次加载、refcount++
      - `release()`：refcount--；归零时释放实例
