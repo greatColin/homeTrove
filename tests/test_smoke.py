@@ -3701,13 +3701,41 @@ def _tag_asset(session, asset_id: int, tags: list[str], category: str | None = N
 
 
 def _link_face(session, asset_id: int, person_id: int):
-    from hometrove.models import FaceEmbedding
+    """v1 helper kept for legacy smart-album tests: link one fake face
+    to a Person. The v2 schema requires every face to belong to a
+    FaceCluster, so we materialize a one-off cluster per Person that
+    these test faces attach to.
+    """
+    import struct
+
+    from hometrove.models import FaceCluster, FaceEmbedding
+
+    cluster = session.query(FaceCluster).filter(
+        FaceCluster.person_id == person_id,
+        FaceCluster.source_plugin_id == "face.image",
+    ).first()
+    if cluster is None:
+        cluster = FaceCluster(
+            person_id=person_id,
+            source_plugin_id="face.image",
+            source_model_name="buffalo_l",
+            name=f"helper-{person_id}",
+            centroid_blob=struct.pack("512f", *([0.0] * 512)),
+            radius=0.0,
+            face_count=0,
+        )
+        session.add(cluster)
+        session.flush()
     session.add(FaceEmbedding(
         asset_id=asset_id,
         person_id=person_id,
+        cluster_id=cluster.id,
+        source_plugin_id="face.image",
+        source_model_name="buffalo_l",
         embedding_json="[0.1,0.2,0.3]",
         confidence=0.9,
     ))
+    cluster.face_count += 1
 
 
 def test_smart_album_crud_and_rule_evaluation(tmp_data_dir, tmp_path: Path):
