@@ -4818,3 +4818,258 @@ def test_search_keyword_recall_includes_vlm_captions(tmp_data_dir):
 
     res = search(_search_session(), "橘猫")
     assert any(i["asset_id"] == 413 for i in res["items"])
+
+
+# ---------------------------------------------------------------------------
+# face-recognition v2 API tests (clusters + faces + persons via clusters)
+# ---------------------------------------------------------------------------
+
+
+def _seed_face_clusters_for_api(tmp_data_dir, tmp_path: Path) -> int:
+    """Seed three clusters across two source plugins for API smoke tests.
+
+    Returns the asset id used for the inserts.
+    """
+    import numpy as np
+    from PIL import Image as PILImage
+
+    from hometrove.db import engine, session_scope
+    from hometrove.face_cluster import cluster_faces_for_asset
+    from hometrove.models import Asset
+    from hometrove.scanner import discover, upsert_assets
+
+    media = tmp_path / "faces"
+    media.mkdir()
+    PILImage.new("RGB", (32, 24), (200, 100, 50)).save(media / "a.png")
+
+    engine()  # ensure schema
+    with session_scope() as s:
+        upsert_assets(s, list(discover([media])))
+
+    with session_scope() as s:
+        aid = s.query(Asset).first().id
+
+    def rand_vec(seed, dim=512):
+        rng = np.random.default_rng(seed)
+        v = rng.standard_normal(dim)
+        return (v / np.linalg.norm(v)).tolist()
+
+    with session_scope() as s:
+        # Two clusters under face.image.
+        cluster_faces_for_asset(
+            s, asset_id=aid,
+            faces=[{"embedding": rand_vec(1), "confidence": 0.9, "box": [0, 0, 10, 10]}],
+            source_plugin_id="face.image",
+            source_model_name="buffalo_l",
+        )
+        cluster_faces_for_asset(
+            s, asset_id=aid,
+            faces=[{"embedding": rand_vec(2), "confidence": 0.9, "box": [0, 0, 10, 10]}],
+            source_plugin_id="face.image",
+            source_model_name="buffalo_l",
+        )
+        # One cluster under face.video — must be listed separately.
+        cluster_faces_for_asset(
+            s, asset_id=aid,
+            faces=[{"embedding": rand_vec(3), "confidence": 0.9, "box": [0, 0, 10, 10]}],
+            source_plugin_id="face.video",
+            source_model_name="buffalo_l",
+        )
+    return aid
+
+
+def test_clusters_list_and_filter(tmp_data_dir, tmp_path: Path):
+    """GET /api/clusters returns every cluster; unassigned/source_plugin filter works."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_face_clusters_for_api(tmp_data_dir, tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/clusters")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == 3
+
+        # Filter by source_plugin_id.
+        r = c.get("/api/clusters", params={"source_plugin_id": "face.image"})
+        assert all(i["source_plugin_id"] == "face.image" for i in r.json()["items"])
+        assert len(r.json()["items"]) == 2
+
+        r = c.get("/api/clusters", params={"source_plugin_id": "face.video"})
+        assert len(r.json()["items"]) == 1
+
+        # Unassigned filter.
+        r = c.get("/api/clusters", params={"unassigned": "true"})
+        assert len(r.json()["items"]) == 3
+
+
+def test_clusters_get_detail_and_patch(tmp_data_dir, tmp_path: Path):
+    """GET /api/clusters/{id} returns faces + representative_face;
+    PATCH renames and attaches to a person."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Person
+
+    _seed_face_clusters_for_api(tmp_data_dir, tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/api/clusters/1")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["source_plugin_id"] == "face.image"
+        assert len(body["faces"]) >= 1
+        # Only one face so representative_face stays NULL until >=3.
+        assert body["representative_face"] is None
+
+        # Create a Person and attach.
+        with session_scope() as s:
+            p = Person(name="alice", info_json="{}")
+            s.add(p)
+            s.commit()
+            pid = p.id
+
+        r = c.patch(f"/api/clusters/1", json={"name": "alice cluster", "person_id": pid})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["name"] == "alice cluster"
+        assert body["person_id"] == pid
+
+        # Clear person_id.
+        r = c.patch(f"/api/clusters/1", json={"clear_person": True})
+        assert r.json()["person_id"] is None
+
+
+def test_clusters_reassign_single_face(tmp_data_dir, tmp_path: Path):
+    """POST /api/clusters/{id}/faces moves a single face into the target cluster."""
+    import numpy as np
+
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.face_cluster import cluster_faces_for_asset
+    from hometrove.models import FaceEmbedding
+
+    _seed_face_clusters_for_api(tmp_data_dir, tmp_path)
+    # Add a face that creates a fresh face.image cluster (cluster id 4) so
+    # we have something to move.
+    with session_scope() as s:
+        aid = s.query(FaceEmbedding).first().asset_id
+        v = (np.random.default_rng(99).standard_normal(512) / np.linalg.norm(
+            np.random.default_rng(99).standard_normal(512)
+        )).tolist()
+        cluster_faces_for_asset(
+            s, asset_id=aid,
+            faces=[{"embedding": v, "confidence": 0.9, "box": [0, 0, 10, 10]}],
+            source_plugin_id="face.image",
+            source_model_name="buffalo_l",
+        )
+        # Pick the face we just inserted — it's the only face.image face
+        # in the new cluster.
+        new_face = (
+            s.query(FaceEmbedding)
+            .filter(FaceEmbedding.source_plugin_id == "face.image")
+            .order_by(FaceEmbedding.id.desc())
+            .first()
+        )
+        new_face_id = new_face.id
+        new_cluster_id = new_face.cluster_id
+        assert new_cluster_id != 1
+
+    app = create_app()
+    with TestClient(app) as c:
+        before = c.get("/api/clusters/1").json()["face_count"]
+        r = c.post("/api/clusters/1/faces", json={"face_id": new_face_id})
+        assert r.status_code == 200, r.text
+        detail = c.get("/api/clusters/1").json()
+        assert any(f["id"] == new_face_id for f in detail["faces"])
+        assert detail["face_count"] == before + 1
+        # Source cluster's face_count went down (refreshing from loader).
+        new_cluster_after = c.get(f"/api/clusters/{new_cluster_id}").json()
+        assert not any(f["id"] == new_face_id for f in new_cluster_after["faces"])
+
+
+def test_clusters_merge_same_partition(tmp_data_dir, tmp_path: Path):
+    """Two same-partition clusters can merge; cross-partition refuses."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+
+    _seed_face_clusters_for_api(tmp_data_dir, tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        # Cluster 1 + 2 are both face.image; cluster 3 is face.video.
+        r = c.post("/api/clusters/1/merge-into/2")
+        assert r.status_code == 200, r.text
+        # Cluster 1 must be gone.
+        assert c.get("/api/clusters/1").status_code == 404
+        # Cluster 2's face count grew.
+        detail = c.get("/api/clusters/2").json()
+        assert detail["face_count"] >= 2
+
+        # Cross-partition is rejected.
+        r = c.post("/api/clusters/2/merge-into/3")
+        assert r.status_code == 400
+
+
+def test_face_get_and_delete(tmp_data_dir, tmp_path: Path):
+    """GET/DELETE /api/faces/{id} round-trip and refresh cluster.face_count."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import FaceCluster, FaceEmbedding
+
+    _seed_face_clusters_for_api(tmp_data_dir, tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        with session_scope() as s:
+            first_face = s.query(FaceEmbedding).order_by(FaceEmbedding.id).first()
+            first_face_id = first_face.id
+            cluster_id = first_face.cluster_id
+
+        r = c.get(f"/api/faces/{first_face_id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == first_face_id
+        assert body["cluster_id"] == cluster_id
+        assert body["source_plugin_id"] == "face.image"
+
+        before = c.get(f"/api/clusters/{cluster_id}").json()["face_count"]
+
+        r = c.delete(f"/api/faces/{first_face_id}")
+        assert r.status_code == 200
+
+        assert c.get(f"/api/faces/{first_face_id}").status_code == 404
+
+        after = c.get(f"/api/clusters/{cluster_id}").json()["face_count"]
+        assert after == before - 1
+
+
+def test_persons_via_clusters_lists_clusters(tmp_data_dir, tmp_path: Path):
+    """Persons endpoint exposes the new cluster_count + clusters fields."""
+    from fastapi.testclient import TestClient
+    from hometrove.api import create_app
+    from hometrove.db import session_scope
+    from hometrove.models import Person
+
+    _seed_face_clusters_for_api(tmp_data_dir, tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        # Attach two clusters to a Person.
+        with session_scope() as s:
+            p = Person(name="bob", info_json="{}")
+            s.add(p)
+            s.commit()
+            pid = p.id
+
+        c.patch("/api/clusters/1", json={"person_id": pid})
+        c.patch("/api/clusters/2", json={"person_id": pid})
+
+        r = c.get("/api/persons", params={"include_clusters": "true"})
+        assert r.status_code == 200
+        items = r.json()["items"]
+        bob = next(i for i in items if i["id"] == pid)
+        assert bob["cluster_count"] == 2
+        assert len(bob["clusters"]) == 2
+        # face_count is the sum of cluster.face_count.
+        assert bob["face_count"] == sum(c["face_count"] for c in bob["clusters"])

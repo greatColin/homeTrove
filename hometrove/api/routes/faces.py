@@ -55,11 +55,13 @@ def delete_face(face_id: int, session: Session = Depends(get_db)):
         raise HTTPException(404, "face not found")
     cluster_id = f.cluster_id
     session.delete(f)
+    session.commit()
     if cluster_id is not None:
+        # Re-query in a fresh transaction so the loader cache reflects the
+        # now-deleted face; doing it before commit counts the still-
+        # attached face and yields a stale face_count.
         cluster = session.get(FaceCluster, cluster_id)
         if cluster is not None:
-            # Refresh face_count from authoritative row set so it stays
-            # accurate even if the loader cache hasn't noticed the delete.
             cluster.face_count = sum(1 for _ in cluster.faces)
-    session.commit()
+            session.commit()
     return {"ok": True, "deleted": face_id}

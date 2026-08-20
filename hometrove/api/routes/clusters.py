@@ -184,9 +184,15 @@ def add_face(
             400,
             "cannot move face across source_model partitions",
         )
+    previous_cluster_id = face.cluster_id
     face.cluster_id = cluster_id
+    session.flush()  # push the cluster_id change so loader sees it
     c.face_count = sum(1 for _ in c.faces)
     c.updated_at = int(time.time())
+    if previous_cluster_id is not None and previous_cluster_id != cluster_id:
+        previous = session.get(FaceCluster, previous_cluster_id)
+        if previous is not None:
+            previous.face_count = sum(1 for _ in previous.faces)
     session.commit()
     return _cluster_dto(c, representative_face=_load_representative(session, c))
 
@@ -219,6 +225,7 @@ def merge_clusters(
     for f in list(src.faces):
         f.cluster_id = dst_id
         moved += 1
+    session.flush()  # push cluster_id reassignments before counting
     dst.face_count = sum(1 for _ in dst.faces)
     dst.updated_at = int(time.time())
     session.delete(src)
