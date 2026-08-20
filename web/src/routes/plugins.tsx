@@ -316,6 +316,7 @@ function StatusModal({
   plugin: PluginDTO;
   onClose: () => void;
 }) {
+  const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ["plugin-status", plugin.id],
     queryFn: () => api.pluginStatus(plugin.id),
@@ -338,7 +339,17 @@ function StatusModal({
     };
   }, []);
 
+  const download = useMutation({
+    mutationFn: () => api.downloadPluginModel(plugin.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plugin-status", plugin.id] });
+      qc.invalidateQueries({ queryKey: ["plugins"] });
+    },
+  });
+
   const status: PluginStatusDTO | undefined = data;
+  const needsModel =
+    plugin.id === "face.image" || plugin.id === "face.video";
 
   return (
     <div
@@ -388,6 +399,22 @@ function StatusModal({
               <div className="flex items-center justify-between">
                 <span className="text-neutral-500">错误时间</span>
                 <span>{new Date(status.error_at * 1000).toLocaleString()}</span>
+              </div>
+            )}
+            {needsModel && (
+              <div className="border-t border-neutral-200 pt-3 dark:border-neutral-700">
+                <button
+                  onClick={() => download.mutate()}
+                  disabled={download.isPending}
+                  className="w-full rounded bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+                >
+                  {download.isPending ? "下载中…" : "下载模型并重启"}
+                </button>
+                {download.isError && (
+                  <p className="mt-2 text-xs text-red-500">
+                    下载失败：{(download.error as Error).message}
+                  </p>
+                )}
               </div>
             )}
           </div>
