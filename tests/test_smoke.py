@@ -291,7 +291,13 @@ def _seed_library(tmp_data_dir, tmp_path: Path, n: int = 4) -> int:
         make_png(media / f"img{i}.png", 10 + i, 8)
     with session_scope() as s:
         upsert_assets(s, list(discover([media])))
-        assert enqueue_pending(s) == n * len(REGISTRY.list())
+        # Only non-stub plugins are scheduled — stubs stay registered for the
+        # plugin list but never get enqueued. (m2+ plugin classification)
+        scheduled = [
+            p for p in REGISTRY.list()
+            if getattr(p, "category", None) != "stub"
+        ]
+        assert enqueue_pending(s) == n * len(scheduled)
     # Consume the queue exactly like the worker does (claims respect the
     # plugin DAG, so ``face.match`` only runs after ``mock.faces``).
     from hometrove.worker.main import _claim_next
@@ -1346,8 +1352,6 @@ def test_plugin_categories_classify_correctly(tmp_data_dir):
         "thumbnail",
         "basic.keyframes",
         "basic.scene_detect",
-        "face.detect",
-        "face.match",
     }
 
     app = create_app()
