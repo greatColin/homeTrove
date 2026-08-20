@@ -165,7 +165,11 @@ def server_url(tmp_path_factory):
         stderr=subprocess.PIPE,
     )
     url = "http://127.0.0.1:8080"
-    deadline = time.time() + 30
+    # Server startup is slow when face plugins boot-load the InsightFace
+    # pack (a ~250MB onnx pack takes on the order of a minute+ to load on
+    # a cold CPU cache the first time). Keep the deadline generous so the
+    # fixture is robust to cold model loads, not just warm ones.
+    deadline = time.time() + 180
     while time.time() < deadline:
         try:
             import urllib.request

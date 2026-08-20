@@ -65,11 +65,29 @@ _STATE = _RuntimeState()
 
 
 def _model_dir(model_name: str) -> Path:
-    """Where InsightFace looks for the unpacked model files."""
-    from insightface.utils import ensure_root  # type: ignore
+    """Where InsightFace looks for the unpacked model files.
 
-    root = ensure_root("")
-    return Path(root) / model_name
+    Always returns the *leaf* path ``~/.insightface/models/<model_name>``,
+    whether or not the files exist yet. That lets the caller distinguish
+    "pack present" (skip the downloader) from "pack missing" (let
+    ``FaceAnalysis`` try to download it) purely via ``Path.exists()``.
+    """
+    from pathlib import Path as _P
+
+    try:
+        from insightface.utils import get_model_dir  # type: ignore
+
+        # ``get_model_dir(name)`` is the canonical leaf path helper on
+        # InsightFace 0.7+; use it when it actually points at existing
+        # files.
+        candidate = _P(get_model_dir(model_name))
+        if candidate.exists():
+            return candidate
+    except Exception:
+        pass
+    # Fallback for versions where ``get_model_dir`` is missing or the pack
+    # has not been downloaded yet.
+    return _P("~/.insightface").expanduser() / "models" / model_name
 
 
 def _build(model_name: str) -> Any:
@@ -78,9 +96,9 @@ def _build(model_name: str) -> Any:
 
     model_path = _model_dir(model_name)
     if not model_path.exists():
-        # We still call prepare() so InsightFace can attempt the download
-        # itself; if that fails too we re-raise as ModelMissingError for a
-        # friendly UI message instead of a raw stack trace.
+        # Model pack missing — let InsightFace try its own downloader.
+        # If that fails we re-raise as ModelMissingError for a friendly UI
+        # message instead of a raw stack trace.
         try:
             app = FaceAnalysis(
                 name=model_name,
@@ -93,10 +111,24 @@ def _build(model_name: str) -> Any:
         return app
     app = FaceAnalysis(
         name=model_name,
+        # InsightFace 0.7+ resolves ``<root>/models/<name>`` internally —
+        # we want that final segment to land at ``~/.insightface/models/
+        # <name>`` (the canonical path), so we pass
+        # ``~/.insightface`` (the *grandparent* of the existing model dir)
+        # as the root. Otherwise the downloader nests into
+        # ``<root>/models/models/<name>``.
+        root=str(model_path.parent.parent),
         allowed_modules=["detection", "recognition"],
         providers=["CPUExecutionProvider"],
     )
-    app.prepare(ctx_id=0, det_size=(640, 640))
+    try:
+        app.prepare(ctx_id=0, det_size=(640, 640))
+    except Exception as exc:
+        # Loading the onnx pack can fail for many reasons (corrupt download,
+        # onnxruntime protobuf mismatch, missing CPU provider). Wrap any of
+        # those into ModelMissingError so the UI can prompt the user to
+        # re-download instead of showing a raw stack trace.
+        raise ModelMissingError(model_name, str(model_path)) from exc
     return app
 
 
