@@ -284,14 +284,17 @@ def plugin_logs(
 
 @router.post("/plugins/{plugin_id}/download-model")
 def download_model(plugin_id: str):
-    """Synchronously trigger an InsightFace model download for plugins that
-    need one (currently ``face.image`` and ``face.video``).
+    """Trigger an InsightFace model download for plugins that need one.
 
-    This drives ``FaceAnalysis.prepare()`` so InsightFace's own CDN download
-    runs. The endpoint is synchronous so the UI can show "下载完成" once
-    the round-trip returns. On success the plugin is restarted so the
-    newly-downloaded pack is loaded into the shared ``FaceAnalysis``
-    singleton.
+    Currently only ``face.image`` and ``face.video`` are managed. The
+    download runs in a background thread so the HTTP request returns
+    immediately; the client polls ``/api/plugins/{id}/status`` to learn
+    when the plugin is back to ``active``.
+
+    The download itself drives ``FaceAnalysis.prepare()`` so InsightFace's
+    own CDN downloader runs — we don't write a parallel HTTP client. On
+    success the plugin is restarted so the newly-downloaded pack is
+    loaded into the shared ``FaceAnalysis`` singleton.
     """
     plugin = REGISTRY.get(plugin_id) if plugin_id in {
         p.id for p in REGISTRY.list()
@@ -301,47 +304,15 @@ def download_model(plugin_id: str):
     if plugin_id not in ("face.image", "face.video"):
         raise HTTPException(400, "plugin has no managed model")
 
-    from hometrove.insightface_runtime import (
-        ensure_downloaded,
-        reset_for_test,
-    )
+    from hometrove.worker.download_models import start_model_download
 
-    ok = ensure_downloaded("buffalo_l")
-    if not ok:
-        # Surface a 502 so the frontend can render a retry button instead of
-        # a generic 500; InsightFace wraps network failures in onnxruntime
-        # errors that look like internal server errors.
-        raise HTTPException(
-            502,
-            "model download failed; check network and InsightFace CDN reachability",
-        )
-
-    # Drop the in-process singleton so the next startup_plugin() pulls the
-    # freshly-downloaded pack into memory. We do this *before* restart so
-    # a half-loaded FaceAnalysis doesn't shadow the new files.
-    reset_for_test()
-
-    from hometrove.plugins.lifecycle import (
-        PluginStatus,
-        get_status,
-        set_status,
-        shutdown_plugin,
-        startup_plugin,
-    )
-
-    # If the plugin is currently in ERROR from a previous missing-model
-    # attempt, restart it. Otherwise the next asset scan will pick the
-    # model up naturally.
-    info = get_status(plugin_id)
-    if info.status == PluginStatus.ERROR or info.status == PluginStatus.IDLE:
-        shutdown_plugin(plugin_id)
-        startup_plugin(plugin_id)
-        set_status(plugin_id, PluginStatus.ACTIVE, "model downloaded + restarted")
-
+    started = start_model_download(plugin_id, "buffalo_l")
     return {
         "ok": True,
         "plugin_id": plugin_id,
         "model_name": "buffalo_l",
+        "started": started,
+        "status_url": f"/api/plugins/{plugin_id}/status",
     }
 
 
