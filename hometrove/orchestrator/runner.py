@@ -106,6 +106,32 @@ def run_one(job_id: int, session: Session) -> None:
         job.finished_at = _now()
         job.actual_cost = elapsed_ms / 1000.0
         job.error = None
+
+        # face.image / face.video: hand the detected vectors off to the
+        # auto-cluster pipeline. Failures here must not flip the job back
+        # to failed — embedding persistence is best-effort and a rerun will
+        # pick up any unsaved faces.
+        if plugin.id in ("face.image", "face.video") and result_status == "ok":
+            try:
+                from hometrove.face_cluster import cluster_faces_for_asset
+
+                faces = result_dict.get("faces") or []
+                if faces:
+                    cluster_faces_for_asset(
+                        session,
+                        asset_id=asset.id,
+                        faces=faces,
+                        source_plugin_id=plugin.id,
+                        source_model_name=result_dict.get(
+                            "source_model_name", "buffalo_l"
+                        ),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                # Log but don't fail the job: the plugin's actual work is
+                # already done, and a rerun can re-cluster any partial set.
+                job.error = (
+                    f"cluster hook failed: {type(exc).__name__}: {exc}"
+                )[:1000]
     except Exception as exc:  # noqa: BLE001
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         pr = session.get(
