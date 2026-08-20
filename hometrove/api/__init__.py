@@ -21,6 +21,8 @@ from hometrove.api.routes import (
     albums,
     app_settings,
     assets,
+    clusters,
+    faces,
     facets,
     folders,
     health,
@@ -154,6 +156,8 @@ def create_app() -> FastAPI:
     app.include_router(assets.router)
     app.include_router(facets.router)
     app.include_router(persons.router)
+    app.include_router(clusters.router)
+    app.include_router(faces.router)
     app.include_router(folders.router)
     app.include_router(jobs.router)
     app.include_router(plugins.router)
