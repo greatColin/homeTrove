@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from hometrove.config import get_settings
 from hometrove.models import Asset, Job
+from hometrove.plugins.api import MediaType
 from hometrove.plugins.builtin.basic_info import classify
 
 
@@ -63,7 +64,14 @@ def iter_paths(root: Path) -> Iterator[Path]:
 
 
 def discover(roots: Iterable[Path], *, max_files: Optional[int] = None) -> Iterator[DiscoveredAsset]:
-    """Walk each root and yield DiscoveredAsset records."""
+    """Walk each root and yield DiscoveredAsset records.
+
+    Only image and video files are emitted. Other extensions (audio,
+    documents, etc.) are dropped — the v2 UI is organised around the
+    image/video tabs and the worker never needs to dispatch plugins to
+    these media types. v1 callers that ingested ``other`` rows can still
+    reach them via the API; new scans simply stop creating them.
+    """
     settings = get_settings()
     seen = 0
     for root in roots:
@@ -75,7 +83,10 @@ def discover(roots: Iterable[Path], *, max_files: Optional[int] = None) -> Itera
                 st = path.stat()
             except OSError:
                 continue
-            mt = classify(path).value
+            mt = classify(path)
+            if mt == MediaType.OTHER:
+                continue
+            mt_value = mt.value
             try:
                 rel = str(path.relative_to(root))
             except ValueError:
@@ -88,7 +99,7 @@ def discover(roots: Iterable[Path], *, max_files: Optional[int] = None) -> Itera
                 root=root,
                 absolute_path=path,
                 rel_path=rel,
-                media_type=mt,
+                media_type=mt_value,
                 size_bytes=st.st_size,
                 mtime=int(st.st_mtime),
                 content_hash_prefix=prefix,
