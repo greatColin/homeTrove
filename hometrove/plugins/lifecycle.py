@@ -6,6 +6,7 @@ shared across processes via append-mode writes.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -14,6 +15,8 @@ from typing import Optional
 
 from hometrove.plugins.log_sink import plugin_log, plugin_logs
 from hometrove.plugins.registry import REGISTRY
+
+_log = logging.getLogger(__name__)
 
 
 class PluginStatus(str, Enum):
@@ -135,6 +138,7 @@ def ensure_started(plugin_id: str) -> None:
     if info.status in (PluginStatus.ACTIVE, PluginStatus.LOADING):
         return
     if getattr(plugin, "heavy_startup", False):
+        _log.info("loading plugin %s in background (heavy_startup=True)", plugin_id)
         threading.Thread(
             target=startup_plugin,
             args=(plugin_id,),
