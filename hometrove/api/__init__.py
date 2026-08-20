@@ -73,10 +73,13 @@ async def lifespan(app: FastAPI):
         s.commit()
 
         # Start enabled plugins so heavy resources (models, pools) are loaded at
-        # boot time rather than on first asset.
+        # boot time rather than on first asset. Stub-category plugins are
+        # registered for completeness but never auto-started — they're shown
+        # in the plugin list with the "未实现" badge and disabled at runtime.
         enabled_ids = {
             p.id for p in REGISTRY.list()
-            if rows.get(p.id) is None or bool(rows.get(p.id).enabled)
+            if getattr(p, "category", None) != "stub"
+            and (rows.get(p.id) is None or bool(rows.get(p.id).enabled))
         }
 
     from hometrove.plugins.lifecycle import start_all_enabled

@@ -290,13 +290,18 @@ def enqueue_pending(
 
     # Absence from plugin_config means "enabled by default" (the lifespan /
     # bootstrap seed rows on startup). Only plugins explicitly disabled
-    # (enabled=0) are filtered out.
+    # (enabled=0) are filtered out. Stub-category plugins are also filtered
+    # — they remain registered for the plugin list but the worker must not
+    # re-enqueue them.
     disabled_ids = set(
         session.scalars(
             select(PluginConfig.plugin_id).where(PluginConfig.enabled == 0)
         ).all()
     )
-    plugins = [p for p in plugins if p.id not in disabled_ids]
+    plugins = [
+        p for p in plugins
+        if p.id not in disabled_ids and getattr(p, "category", None) != "stub"
+    ]
 
     now = int(time.time())
     enqueued = 0

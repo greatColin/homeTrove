@@ -23,11 +23,12 @@ from hometrove.plugins.base import BasePlugin
 
 class FaceMatchPlugin(BasePlugin):
     id: str = "face.match"
-    name: str = "人脸归组"
-    description: str = "读取 face.detect 的人脸向量，将同一人脸归组为人员并命名人名，构建人脸相册"
+    name: str = "人脸归组 — 已废弃"
+    description: str = "已废弃：归组逻辑现在由 face.image / face.video 内部聚簇 + hometrove.face_cluster.cluster_faces_for_asset 实现。代码保留作参考，不再被 worker 调度。"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     depends_on: list[str] = ["face.detect"]
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         threshold: float = 0.75

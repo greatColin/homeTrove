@@ -14,7 +14,7 @@
    - 运行 `alembic upgrade head` 验证迁移通过
    - 关联需求：Requirement 3、6；设计文档 §5、§11
 
-- [ ] 2. 旧插件标记 stub 与 registry 清理
+- [x] 2. 旧插件标记 stub 与 registry 清理
    - 修改 `hometrove/plugins/builtin/face_detect.py`：设置 `category = "stub"`、不再被 worker 调度
    - 修改 `hometrove/plugins/builtin/face_match.py`：同上
    - 修改 `hometrove/plugins/mock/__init__.py`：MockFacesPlugin/MockTagsPlugin/MockCategoryPlugin 标记 stub，保留注册

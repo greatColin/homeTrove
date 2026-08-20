@@ -74,14 +74,15 @@ def _resolve_src(asset: AssetLike) -> Optional[Any]:
 
 class FaceDetectPlugin(BasePlugin):
     id: str = "face.detect"
-    name: str = "人脸检测（InsightFace）"
-    description: str = "检测图片中的人脸，或视频场景代表帧中的人脸；输出人脸边框、置信度和 512 维向量"
+    name: str = "人脸检测（InsightFace）— 已废弃"
+    description: str = "已废弃：被 face.image / face.video 替代。代码保留作参考，不再被 worker 调度。"
     version: str = "0.1.0"
     supported_media: set[str] = {MediaType.IMAGE.value, MediaType.VIDEO.value}
     # ``basic.scene_detect`` keyframes are consumed opportunistically inside
     # run(); it must not be a DAG dependency because scene_detect only runs on
     # videos and would deadlock image assets.
     depends_on: list[str] = ["basic.info"]
+    category: str = "stub"
 
     class ParamsModel(BaseModel):
         det_thresh: float = 0.5
