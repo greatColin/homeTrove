@@ -28,7 +28,7 @@
      - 内部异常 `ModelMissingError`：检测 `~/.insightface/models/buffalo_l/` 不存在时抛出
    - 关联需求：Requirement 1（AC4、AC5）；Requirement 6（AC4、AC5）
 
-- [ ] 4. face.image 插件实现
+- [x] 4. face.image 插件实现
    - 新建 `hometrove/plugins/builtin/face_image.py`
      - `id="face.image"`、`name="人脸识别（图片）"`、`supported_media={image}`、`depends_on=["basic.info"]`、`category="implemented"`
      - `startup()`：调用 `InsightFaceRuntime.acquire()`
@@ -38,7 +38,7 @@
    - 在 `hometrove/plugins/builtin/__init__.py` 中 `REGISTRY.register(FaceImagePlugin())`
    - 关联需求：Requirement 1（AC1、AC4、AC7）
 
-- [ ] 5. face.video 插件实现
+- [x] 5. face.video 插件实现
    - 新建 `hometrove/plugins/builtin/face_video.py`
      - `id="face.video"`、`name="人脸识别（视频）"`、`supported_media={video}`、`depends_on=["basic.info"]`、`category="implemented"`
      - `startup()` / `shutdown()`：同 face.image 共享 `InsightFaceRuntime`
@@ -48,7 +48,7 @@
    - 在 `hometrove/plugins/builtin/__init__.py` 中 `REGISTRY.register(FaceVideoPlugin())`
    - 关联需求：Requirement 1（AC2、AC3、AC5、AC6）
 
-- [ ] 6. 插件内自动归组（face_cluster.py）
+- [x] 6. 插件内自动归组（face_cluster.py）
    - 新建 `hometrove/face_cluster.py`
      - `cluster_faces_for_asset(session, plugin_id, model_name, asset_id, faces)`：写入 Face 行 + 按 cosine 距离匹配 FaceCluster.centroid_blob
      - `_find_match(clusters, vec)`：对每个 cluster 计算 `cosine_similarity(vec, np.frombuffer(cluster.centroid_blob))`；超 MERGE_THRESHOLD 时返回最佳匹配
@@ -57,7 +57,7 @@
      - `MERGE_THRESHOLD = 0.75`、`MIN_FACES = 3` 常量
    - 关联需求：Requirement 2（AC1-AC6）
 
-- [ ] 7. Worker 钩子：插件 run 完调自动归组
+- [x] 7. Worker 钩子：插件 run 完调自动归组
    - 修改 `hometrove/orchestrator/run.py`（或 worker 中的 plugin run 调用点）
      - 在 `face.image` / `face.video` 的 result 持久化后，调用 `cluster_faces_for_asset(session, plugin_id, model_name, asset_id, faces)`
    - 关联需求：Requirement 2
@@ -68,7 +68,7 @@
    - 运行 `pytest -k face_cluster` 通过
    - 关联需求：Requirement 1、2
 
-- [ ] 9. clusters / faces API 端点
+- [x] 9. clusters / faces API 端点
    - 新建 `hometrove/api/routes/clusters.py`
      - `GET /api/clusters`：列表，支持 `?person_id`、`?source_plugin`、`?unassigned=true` 过滤
      - `GET /api/clusters/{id}`：详情，含 faces 列表与 representative_face
@@ -82,7 +82,7 @@
    - 在 `hometrove/api/__init__.py` 注册两个 router
    - 关联需求：Requirement 3（AC3、AC5）
 
-- [ ] 10. persons API 改造 + 模型下载端点
+- [x] 10. persons API 改造 + 模型下载端点
    - 修改 `hometrove/api/routes/persons.py`
      - `GET /api/persons/{id}` 响应增加 `cluster_ids`、`plugin_ids`（去重）、`total_faces`
      - 新增 `POST /api/persons/{id}/clusters/{cluster_id}`：关联 cluster 到 person
@@ -91,21 +91,21 @@
      - 新增 `POST /api/plugins/{plugin_id}/download-model`：仅 face.image / face.video 可调，启动后台线程下载
    - 关联需求：Requirement 3（AC1-AC4）、Requirement 5（AC3）
 
-- [ ] 11. 模型下载后台 worker
+- [x] 11. 模型下载后台 worker
    - 新建 `hometrove/worker/download_models.py`
      - `enqueue_model_download(plugin_id) -> task_id`：起一个 daemon thread 跑 `_download_worker`
      - `_download_worker`：调 `InsightFaceRuntime.acquire()`（触发 InsightFace 自动下载到 `~/.insightface/models/buffalo_l/`）→ 释放 refcount → `startup_plugin(plugin_id)` 重启插件
      - 异常处理：捕获网络/磁盘错误，写 plugin-log，让插件 status 保持 error
    - 关联需求：Requirement 5（AC3-AC7）
 
-- [ ] 12. 检查点：API 端到端测试
+- [x] 12. 检查点：API 端到端测试
    - 运行 `pytest -k clusters` 通过
    - 运行 `pytest -k faces` 通过
    - 运行 `pytest -k persons` 通过
    - 运行 `pytest -k download_model` 通过
    - 关联需求：Requirement 3、5
 
-- [ ] 13. 前端：person/cluster/face 三层下钻 UI
+- [x] 13. 前端：person/cluster/face 三层下钻 UI
    - 修改 `web/src/lib/api.ts`
      - `FaceClusterDTO`、`FaceDTO` 类型
      - `api.listClusters({personId, sourcePlugin, unassigned})`、`api.getCluster(id)`、`api.updateCluster(id, body)`、`api.deleteCluster(id)`、`api.mergeClusters(src, dst)`
@@ -123,13 +123,13 @@
    - 修改 `web/src/App.tsx` 注册新路由
    - 关联需求：Requirement 4（AC1-AC5）
 
-- [ ] 14. 前端：插件行模型下载按钮
+- [x] 14. 前端：插件行模型下载按钮
    - 修改 `web/src/routes/plugins.tsx`
      - 插件 status=error 且 detail 含"缺少模型"时显示"下载模型并重启"按钮
      - 点击调 `api.downloadModel(pluginId)`，mutation 期间显示"下载中…"，成功后 invalidateQueries 让 status 变 active
    - 关联需求：Requirement 5（AC1、AC2）
 
-- [ ] 15. 旧测试清理与新测试补全
+- [x] 15. 旧测试清理与新测试补全
    - 删除 `tests/test_smoke.py` 中三个旧测试：
      - `test_face_grouping_creates_unnamed_persons`
      - `test_face_match_creates_person_via_mock`
@@ -149,7 +149,7 @@
      - `test_delete_cluster_clears_face_cluster_id`
    - 关联需求：全部
 
-- [ ] 16. 最终检查点
+- [x] 16. 最终检查点
    - 运行全套 `pytest` 通过
    - 运行 `python -c "from hometrove.api import create_app; create_app()"` 确认启动无报错
    - 运行前端 `npm run build` 通过
