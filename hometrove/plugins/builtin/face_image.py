@@ -36,6 +36,11 @@ def _serialize_face(face: Any) -> dict[str, Any]:
             int(bbox[2]),
             int(bbox[3]),
         ],
+        # Image plugins always emit frame_index=None / frame_t=None so the
+        # downstream schema is uniform — the worker only needs to check
+        # ``source_plugin_id`` to know which face came from where.
+        "frame_index": None,
+        "frame_t": None,
     }
 
 

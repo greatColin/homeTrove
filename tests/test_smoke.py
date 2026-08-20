@@ -718,6 +718,293 @@ def test_face_detect_skips_undecodable(tmp_data_dir, tmp_path: Path, monkeypatch
     assert res["status"] == "skipped"
 
 
+def test_face_image_skips_without_model(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """face.image reports status=error + model_name when the pack is missing."""
+    import numpy as np
+
+    from hometrove.insightface_runtime import _STATE, reset_for_test
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.face_image import FaceImagePlugin
+
+    reset_for_test()
+    monkeypatch.setattr(
+        "hometrove.insightface_runtime._build",
+        lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("force ModelMissingError path")
+        ),
+    )
+
+    # Make acquire() raise ModelMissingError by patching it to bypass
+    # _build entirely. We reset the singleton first so the test starts
+    # from a known empty state.
+    from hometrove.insightface_runtime import acquire as _orig_acquire, ModelMissingError
+
+    def _raising_acquire(model_name: str = "buffalo_l"):
+        raise ModelMissingError(model_name, "/tmp/fake-model-dir")
+
+    monkeypatch.setattr(
+        "hometrove.plugins.builtin.face_image.acquire", _raising_acquire
+    )
+
+    src = tmp_path / "p.png"
+    _make_photo(src, 64, 48)
+    p = FaceImagePlugin()
+    asset = AssetLike(
+        id=70, path=str(src), media_root=str(src.parent),
+        media_type=MediaType.IMAGE.value, content_hash_prefix="fimg",
+    )
+    res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+    assert res["status"] == "error"
+    assert "缺少模型" in res["reason"]
+    assert res["model_name"] == "buffalo_l"
+
+
+def test_face_image_emits_expected_shape(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """face.image uses a fake FaceAnalysis to emit the v2 contract."""
+    import numpy as np
+
+    from hometrove.insightface_runtime import reset_for_test
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.face_image import FaceImagePlugin
+
+    class FakeApp:
+        def get(self, img, max_num=0):  # noqa: ARG002
+            class F:
+                bbox = np.array([3.0, 4.0, 60.0, 80.0])
+                det_score = 0.95
+                embedding = np.linspace(0.0, 1.0, 512)
+
+            return [F(), F()]
+
+    # ``acquire`` in face_image is the runtime's, so patch the runtime's
+    # helper that run() invokes to bypass onnxruntime. We replace
+    # _build() so the singleton is built but with a stub FaceAnalysis.
+    monkeypatch.setattr(
+        "hometrove.insightface_runtime._build",
+        lambda model_name: FakeApp(),
+    )
+    reset_for_test()
+    try:
+        src = tmp_path / "p.png"
+        _make_photo(src, 64, 48)
+        p = FaceImagePlugin()
+        asset = AssetLike(
+            id=71, path=str(src), media_root=str(src.parent),
+            media_type=MediaType.IMAGE.value, content_hash_prefix="fimg2",
+        )
+        res = p.run(asset, PluginContext(asset=asset, params=p.ParamsModel()))
+        assert res["status"] == "ok"
+        assert res["detected"] == 2
+        assert res["source_plugin_id"] == "face.image"
+        assert res["source_model_name"] == "buffalo_l"
+        assert len(res["faces"][0]["embedding"]) == 512
+        assert res["faces"][0]["frame_index"] is None
+        assert res["faces"][0]["frame_t"] is None
+    finally:
+        reset_for_test()
+
+
+def test_face_video_dedup_and_emits_metadata(tmp_data_dir, tmp_path: Path, monkeypatch):
+    """face.video dedups by cosine and emits frame_index/frame_t."""
+    import numpy as np
+
+    from hometrove.db import session_scope
+    from hometrove.insightface_runtime import reset_for_test
+    from hometrove.models import Asset, PluginResult
+    from hometrove.plugins.api import AssetLike, MediaType, PluginContext
+    from hometrove.plugins.builtin.face_video import FaceVideoPlugin
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self._seen: list[np.ndarray] = []
+
+        def get(self, img, max_num=0):  # noqa: ARG002
+            # Two faces per frame. The first face is identical across
+            # both frames so it gets deduped. The second face is
+            # orthogonal so its cosine similarity with itself across
+            # frames is also 1.0 (still deduped). Net: 2 unique faces,
+            # both emitted from frame 0 only.
+            class F1:
+                bbox = np.array([1.0, 2.0, 30.0, 40.0])
+                det_score = 0.9
+                embedding = np.full(512, 0.1)
+
+            class F2:
+                bbox = np.array([100.0, 100.0, 200.0, 200.0])
+                det_score = 0.8
+                # Half 0.9 / half -0.9 so cosine to itself stays 1.0 but
+                # the magnitude is non-trivial.
+                embedding = np.concatenate(
+                    [np.full(256, 0.9), np.full(256, -0.9)]
+                )
+
+            return [F1(), F2()]
+
+    monkeypatch.setattr(
+        "hometrove.insightface_runtime._build",
+        lambda model_name: FakeApp(),
+    )
+    reset_for_test()
+    try:
+        src = tmp_path / "clip.mp4"
+        _make_scene_video(src, [(40, 12), (200, 12)])
+        with session_scope() as s:
+            s.add(Asset(
+                id=80, path=str(src), media_root=str(src.parent),
+                content_hash="fv", media_type="video",
+                created_at=0, updated_at=0,
+                filename="clip.mp4", size_bytes=0,
+            ))
+            s.add(PluginResult(
+                asset_id=80, plugin_id="basic.scene_detect",
+                plugin_version="0.1.0", status="ok",
+                result_json='{"scenes": [{"keyframe": 1.0}, {"keyframe": 4.0}]}',
+                elapsed_ms=10, finished_at=0,
+            ))
+            s.commit()
+
+        p = FaceVideoPlugin()
+        asset = AssetLike(
+            id=80, path=str(src), media_root=str(src.parent),
+            media_type=MediaType.VIDEO.value, content_hash_prefix="fv",
+        )
+        ctx = PluginContext(
+            asset=asset,
+            params=p.ParamsModel(),
+            db=None,
+            data_dir=tmp_data_dir,
+        )
+        # Pre-seed the basic.scene_detect result memo so we don't need a
+        # live DB session in this test.
+        ctx._result_cache["basic.scene_detect"] = {
+            "scenes": [{"keyframe": 1.0}, {"keyframe": 4.0}],
+        }
+        # Provide a deterministic frames() iterable so the fake App can
+        # emit; two numpy arrays stand in for keyframe decodes. The cache
+        # key shape must match PluginContext.frames() exactly: ("frames",
+        # count, tuple(at_seconds)).
+        ctx._frames_cache[("frames", 8, (1.0, 4.0))] = [
+            np.full((48, 64, 3), 200, dtype=np.uint8),
+            np.full((48, 64, 3), 200, dtype=np.uint8),
+        ]
+        res = p.run(asset, ctx)
+        assert res["status"] == "ok"
+        # Two keyframes, both emit [F1(0.1), F2(0.9)]. F1 in frame 2 is
+        # deduped against frame 1's F1 (cosine=1.0 > threshold). F2 in
+        # frame 2 is also deduped. Net: 1 unique face per identity, 2
+        # total.
+        assert res["detected"] == 2
+        # First emitted face: F1 from frame 0 at t=1.0.
+        assert res["faces"][0]["frame_index"] == 0
+        assert res["faces"][0]["frame_t"] == 1.0
+        # Second emitted face: F2 from frame 0 at t=1.0 (frame 1 was
+        # deduped).
+        assert res["faces"][1]["frame_index"] == 0
+        assert res["faces"][1]["frame_t"] == 1.0
+        assert res["source_plugin_id"] == "face.video"
+    finally:
+        reset_for_test()
+
+
+def test_face_cluster_groups_similar_vectors(tmp_data_dir, tmp_path: Path):
+    """face_cluster.cluster_faces_for_asset groups similar vectors together."""
+    import numpy as np
+
+    from hometrove.db import session_scope
+    from hometrove.face_cluster import cluster_faces_for_asset
+    from hometrove.models import Asset, FaceCluster, FaceEmbedding
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=90, path="x.png", media_root=str(tmp_path),
+            content_hash="fc", media_type="image",
+            created_at=0, updated_at=0,
+            filename="x.png", size_bytes=0,
+        ))
+        s.commit()
+        aid = 90
+
+    def rand_vec(seed, dim=512):
+        rng = np.random.default_rng(seed)
+        v = rng.standard_normal(dim)
+        return (v / np.linalg.norm(v)).tolist()
+
+    v1 = rand_vec(1)
+    v2 = (np.asarray(v1) * 0.99 + np.random.default_rng(2).standard_normal(512) * 0.01).tolist()
+    v3 = rand_vec(3)
+
+    with session_scope() as s:
+        counts = cluster_faces_for_asset(
+            s, asset_id=aid,
+            faces=[
+                {"embedding": v1, "confidence": 0.9, "box": [0, 0, 10, 10]},
+                {"embedding": v2, "confidence": 0.9, "box": [0, 0, 10, 10]},
+                {"embedding": v3, "confidence": 0.9, "box": [0, 0, 10, 10]},
+            ],
+            source_plugin_id="face.image",
+            source_model_name="buffalo_l",
+        )
+        assert counts["persisted"] == 3
+        assert s.query(FaceCluster).count() == 2
+
+    with session_scope() as s:
+        # v4 close to v1 should merge into the larger cluster.
+        v4 = (np.asarray(v1) * 0.98 + np.random.default_rng(4).standard_normal(512) * 0.02).tolist()
+        cluster_faces_for_asset(
+            s, asset_id=aid,
+            faces=[{"embedding": v4, "confidence": 0.9, "box": [0, 0, 10, 10]}],
+            source_plugin_id="face.image",
+            source_model_name="buffalo_l",
+        )
+        # Same cluster count, one cluster has 3 faces.
+        clusters = s.query(FaceCluster).order_by(FaceCluster.face_count.desc()).all()
+        assert s.query(FaceCluster).count() == 2
+        assert clusters[0].face_count == 3
+        # After 3 faces the representative_face_id is set.
+        assert clusters[0].representative_face_id is not None
+        # v3's cluster has 1 face and no representative.
+        assert clusters[1].face_count == 1
+        assert clusters[1].representative_face_id is None
+
+
+def test_face_cluster_isolates_by_source_plugin(tmp_data_dir, tmp_path: Path):
+    """face.image and face.video faces never auto-merge into the same cluster."""
+    import numpy as np
+
+    from hometrove.db import session_scope
+    from hometrove.face_cluster import cluster_faces_for_asset
+    from hometrove.models import Asset, FaceCluster
+
+    with session_scope() as s:
+        s.add(Asset(
+            id=91, path="x.png", media_root=str(tmp_path),
+            content_hash="fc2", media_type="image",
+            created_at=0, updated_at=0,
+            filename="x.png", size_bytes=0,
+        ))
+        s.commit()
+        aid = 91
+
+    rng = np.random.default_rng(1)
+    vec = (rng.standard_normal(512) / np.linalg.norm(rng.standard_normal(512))).tolist()
+
+    with session_scope() as s:
+        cluster_faces_for_asset(
+            s, asset_id=aid,
+            faces=[{"embedding": vec, "confidence": 0.9, "box": [0, 0, 10, 10]}],
+            source_plugin_id="face.image",
+            source_model_name="buffalo_l",
+        )
+        cluster_faces_for_asset(
+            s, asset_id=aid,
+            faces=[{"embedding": vec, "confidence": 0.9, "box": [0, 0, 10, 10]}],
+            source_plugin_id="face.video",
+            source_model_name="buffalo_l",
+        )
+        # Same vector, different source plugin -> two distinct clusters.
+        assert s.query(FaceCluster).count() == 2
+
+
 def test_face_detect_video_samples_keyframes(tmp_data_dir, tmp_path: Path, monkeypatch):
     """Video detection samples scene keyframes and dedups the same identity."""
     import numpy as np
