@@ -17,10 +17,10 @@ from hometrove.plugins.api import AssetLike, PluginContext
 from hometrove.plugins.builtin.basic_info import classify
 from hometrove.plugins.lifecycle import (
     PluginStatus,
+    ensure_started,
     get_logs as get_plugin_logs,
     get_status as get_plugin_status,
     shutdown_plugin,
-    startup_plugin,
 )
 from hometrove.plugins.registry import REGISTRY
 from hometrove.scanner import enqueue_pending
@@ -114,9 +114,10 @@ def update_plugin(plugin_id: str, body: PluginUpdate, session: Session = Depends
 
     # Lifecycle hooks run after the DB commit so the persisted state matches
     # the runtime state. Failures are captured in the in-memory status and
-    # do not roll back the config change.
+    # do not roll back the config change. Heavy plugins start on a background
+    # thread so enabling face.image/face.video never blocks the request.
     if body.enabled:
-        startup_plugin(plugin_id)
+        ensure_started(plugin_id)
     else:
         shutdown_plugin(plugin_id)
 

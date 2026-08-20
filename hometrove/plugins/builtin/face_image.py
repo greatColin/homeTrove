@@ -59,6 +59,9 @@ class FaceImagePlugin(BasePlugin):
     # into status=error with a "缺少模型" reason so the frontend can offer
     # the download button.
     category: str = "implemented"
+    # Boot-loading the ~250MB buffalo_l pack takes a while; let the lifecycle
+    # manager start this plugin on a background thread so the API stays up.
+    heavy_startup: bool = True
 
     class ParamsModel(BaseModel):
         det_thresh: float = 0.5

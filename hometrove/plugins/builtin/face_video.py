@@ -66,6 +66,9 @@ class FaceVideoPlugin(BasePlugin):
     # it as a dependency so the worker waits for scene cuts before we run.
     depends_on: list[str] = ["basic.info", "basic.scene_detect"]
     category: str = "implemented"
+    # Boot-loading the ~250MB buffalo_l pack takes a while; let the lifecycle
+    # manager start this plugin on a background thread so the API stays up.
+    heavy_startup: bool = True
 
     class ParamsModel(BaseModel):
         det_thresh: float = 0.5

@@ -120,16 +120,42 @@ def shutdown_plugin(plugin_id: str) -> None:
         lock.release()
 
 
+def ensure_started(plugin_id: str) -> None:
+    """Start a plugin if it is not already active/loading.
+
+    Heavy-startup plugins (model loads/downloads) are started on a daemon
+    thread so this call never blocks the caller — the plugin flips
+    ``loading`` → ``active`` in the background. Light plugins start inline
+    for predictable timing.
+    """
+    plugin = REGISTRY.get(plugin_id)
+    if plugin is None:
+        return
+    info = get_status(plugin_id)
+    if info.status in (PluginStatus.ACTIVE, PluginStatus.LOADING):
+        return
+    if getattr(plugin, "heavy_startup", False):
+        threading.Thread(
+            target=startup_plugin,
+            args=(plugin_id,),
+            name=f"startup-{plugin_id}",
+            daemon=True,
+        ).start()
+    else:
+        startup_plugin(plugin_id)
+
+
 def start_all_enabled(enabled_ids: set[str]) -> None:
-    """Start every enabled plugin that is not already active."""
+    """Start every enabled plugin that is not already active.
+
+    Heavy plugins are started asynchronously (see ``ensure_started``) so a
+    slow model load at boot does not hold up the API server.
+    """
 
     for plugin_id in enabled_ids:
         if plugin_id not in {p.id for p in REGISTRY.list()}:
             continue
-        info = get_status(plugin_id)
-        if info.status in (PluginStatus.ACTIVE, PluginStatus.LOADING):
-            continue
-        startup_plugin(plugin_id)
+        ensure_started(plugin_id)
 
 
 def get_logs(plugin_id: str, limit: int = 100) -> list[dict]:

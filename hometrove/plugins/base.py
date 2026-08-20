@@ -53,6 +53,12 @@ class BasePlugin:
     # can derive it from the dependency chain.
     category: ClassVar[PluginCategoryT | None] = None
 
+    # Heavy-startup plugins (e.g. face.image / face.video boot-load a ~250MB
+    # onnx pack on ``startup()``) set this True so the lifecycle manager
+    # starts them on a background thread — the app becomes reachable
+    # immediately and the plugin flips loading → active in the background.
+    heavy_startup: ClassVar[bool] = False
+
     # If a subclass needs to expose user-tunable params it sets ParamsModel.
     # Default is a concrete empty model so ``model_validate({})`` always works.
     ParamsModel: ClassVar[type[BaseModel]] = EmptyParams
