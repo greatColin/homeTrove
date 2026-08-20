@@ -10,6 +10,7 @@ from hometrove.plugins.builtin.embedding_bge_m3 import EmbeddingBgeM3Plugin
 from hometrove.plugins.builtin.embedding_clip import EmbeddingJinaClipPlugin
 from hometrove.plugins.builtin.exif import ExifPlugin
 from hometrove.plugins.builtin.face_detect import FaceDetectPlugin
+from hometrove.plugins.builtin.face_image import FaceImagePlugin
 from hometrove.plugins.builtin.keyframes import KeyframesPlugin
 from hometrove.plugins.builtin.scene_detect import SceneDetectPlugin
 from hometrove.plugins.builtin.thumbnail import ThumbnailPlugin
@@ -22,6 +23,7 @@ __all__ = [
     "EmbeddingJinaClipPlugin",
     "ExifPlugin",
     "FaceDetectPlugin",
+    "FaceImagePlugin",
     "KeyframesPlugin",
     "SceneDetectPlugin",
     "ThumbnailPlugin",
@@ -37,6 +39,7 @@ def _register_builtins() -> None:
     _R.register(EmbeddingJinaClipPlugin())
     _R.register(ExifPlugin())
     _R.register(FaceDetectPlugin())
+    _R.register(FaceImagePlugin())
     _R.register(KeyframesPlugin())
     _R.register(SceneDetectPlugin())
     _R.register(ThumbnailPlugin())
