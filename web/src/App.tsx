@@ -9,6 +9,7 @@ import Upload from "./routes/upload";
 import AssetDetail from "./routes/asset_detail";
 import FacetPage from "./routes/facet";
 import PersonsPage from "./routes/persons";
+import ClusterDetailPage from "./routes/cluster_detail";
 import Plugins from "./routes/plugins";
 import Search from "./routes/search";
 import Albums from "./routes/albums";
@@ -163,6 +164,9 @@ export default function App() {
           <Route path="/tags" element={<FacetPage facet="tags" title="标签" emptyHint="按内容自动标记，点击标签查看对应文件。" />} />
           <Route path="/categories" element={<FacetPage facet="categories" title="分类" emptyHint="按内容自动归类，点击分类查看对应文件。" />} />
           <Route path="/faces" element={<PersonsPage />} />
+          <Route path="/persons" element={<PersonsPage />} />
+          <Route path="/persons/:personId" element={<PersonsPage />} />
+          <Route path="/clusters/:clusterId" element={<ClusterDetailPage />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/upload" element={<Upload />} />
           <Route path="/plugins" element={<Plugins />} />

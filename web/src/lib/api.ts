@@ -161,12 +161,44 @@ export interface FolderResponse {
   roots: FolderRoot[];
 }
 
+export interface FaceDTO {
+  id: number;
+  asset_id: number;
+  asset_filename: string | null;
+  cluster_id: number | null;
+  source_plugin_id: string;
+  source_model_name: string;
+  confidence: number | null;
+  box: number[] | null;
+  frame_index: number | null;
+  frame_t: number | null;
+}
+
+export interface ClusterSummaryDTO {
+  id: number;
+  name: string;
+  source_plugin_id: string;
+  source_model_name: string;
+  face_count: number;
+  radius: number;
+}
+
+export interface ClusterDTO extends ClusterSummaryDTO {
+  person_id: number | null;
+  representative_face: FaceDTO | null;
+  faces: FaceDTO[];
+  created_at: number;
+  updated_at: number;
+}
+
 export interface PersonDTO {
   id: number;
   name: string;
   info: Record<string, unknown>;
   face_count: number;
+  cluster_count: number | null;
   asset_ids: number[];
+  clusters: ClusterSummaryDTO[] | null;
   created_at: number;
   updated_at: number;
 }
@@ -399,8 +431,14 @@ export const api = {
       method: "POST",
     }),
   folders: () => request<FolderResponse>("/folders"),
-  persons: () => request<{ items: PersonDTO[] }>("/persons?include_assets=true"),
-  person: (id: number) => request<PersonDTO>(`/persons/${id}`),
+  persons: (includeClusters = false) =>
+    request<{ items: PersonDTO[] }>(
+      `/persons?include_assets=true${includeClusters ? "&include_clusters=true" : ""}`,
+    ),
+  person: (id: number, includeClusters = false) =>
+    request<PersonDTO>(
+      `/persons/${id}${includeClusters ? "?include_clusters=true" : ""}`,
+    ),
   updatePerson: (id: number, body: Record<string, unknown>) =>
     request<PersonDTO>(`/persons/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   mergePersons: (keepId: number, removeId: number) =>
@@ -426,6 +464,52 @@ export const api = {
     request<{ items: PluginLogEntryDTO[] }>(
       `/plugins/${encodeURIComponent(id)}/logs?limit=${limit}`,
     ),
+  downloadPluginModel: (id: string) =>
+    request<{ ok: boolean; plugin_id: string; model_name: string }>(
+      `/plugins/${encodeURIComponent(id)}/download-model`,
+      { method: "POST" },
+    ),
+  clusters: (params: {
+    person_id?: number;
+    unassigned?: boolean;
+    source_plugin_id?: string;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.person_id != null) qs.set("person_id", String(params.person_id));
+    if (params.unassigned) qs.set("unassigned", "true");
+    if (params.source_plugin_id) qs.set("source_plugin_id", params.source_plugin_id);
+    const tail = qs.toString();
+    return request<{ items: ClusterDTO[] }>(
+      `/clusters${tail ? `?${tail}` : ""}`,
+    );
+  },
+  cluster: (id: number) => request<ClusterDTO>(`/clusters/${id}`),
+  updateCluster: (
+    id: number,
+    body: { name?: string; person_id?: number; clear_person?: boolean },
+  ) =>
+    request<ClusterDTO>(`/clusters/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteCluster: (id: number) =>
+    request<{ ok: boolean; deleted: number }>(`/clusters/${id}`, {
+      method: "DELETE",
+    }),
+  reassignFace: (clusterId: number, faceId: number) =>
+    request<ClusterDTO>(`/clusters/${clusterId}/faces`, {
+      method: "POST",
+      body: JSON.stringify({ face_id: faceId }),
+    }),
+  mergeClusters: (srcId: number, dstId: number) =>
+    request<{ ok: boolean; moved: number; deleted_cluster_id: number }>(
+      `/clusters/${srcId}/merge-into/${dstId}`,
+      { method: "POST" },
+    ),
+  deleteFace: (id: number) =>
+    request<{ ok: boolean; deleted: number }>(`/faces/${id}`, {
+      method: "DELETE",
+    }),
   rerunPlugin: (id: string) =>
     request<{ ok: boolean; dropped: number; enqueued: number }>(
       `/plugins/${encodeURIComponent(id)}/rerun`,

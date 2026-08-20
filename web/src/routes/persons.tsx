@@ -1,7 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, mediaLabel, type AssetDTO, type PersonDTO } from "../lib/api";
+import {
+  api,
+  mediaLabel,
+  type AssetDTO,
+  type ClusterSummaryDTO,
+  type PersonDTO,
+} from "../lib/api";
 
 function PersonThumb({ person }: { person: PersonDTO }) {
   const firstAssetId = person.asset_ids?.[0];
@@ -21,6 +27,23 @@ function PersonThumb({ person }: { person: PersonDTO }) {
         <span className="text-neutral-400">?</span>
       )}
     </div>
+  );
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  "face.image": "图片",
+  "face.video": "视频",
+};
+
+function ClusterBadge({ cluster }: { cluster: ClusterSummaryDTO }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+      <span className="font-medium">
+        {SOURCE_LABEL[cluster.source_plugin_id] ?? cluster.source_plugin_id}
+      </span>
+      <span className="text-neutral-400">·</span>
+      <span>{cluster.face_count} 张</span>
+    </span>
   );
 }
 
@@ -52,7 +75,16 @@ function PersonCard({
             person.name
           )}
         </div>
-        <div className="text-xs text-neutral-500">{person.face_count} 张人脸</div>
+        <div className="mt-1 flex flex-wrap justify-center gap-1">
+          {(person.clusters ?? []).map((c) => (
+            <ClusterBadge key={c.id} cluster={c} />
+          ))}
+          {person.clusters == null && (
+            <span className="text-xs text-neutral-500">
+              {person.face_count} 张人脸
+            </span>
+          )}
+        </div>
       </div>
     </button>
   );
@@ -83,6 +115,7 @@ function EditDialog({
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["persons"] });
+      qc.invalidateQueries({ queryKey: ["clusters"] });
       qc.invalidateQueries({ queryKey: ["facets"] });
       onClose();
     },
@@ -146,7 +179,7 @@ function MergeDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ["persons"], queryFn: api.persons });
+  const { data } = useQuery({ queryKey: ["persons"], queryFn: () => api.persons() });
   const unnamed = (data?.items ?? []).filter(
     (p) => p.id !== person.id && p.name.startsWith("未命名"),
   );
@@ -157,6 +190,7 @@ function MergeDialog({
     mutationFn: () => api.mergePersons(person.id, target!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["persons"] });
+      qc.invalidateQueries({ queryKey: ["clusters"] });
       qc.invalidateQueries({ queryKey: ["facets"] });
       onClose();
     },
@@ -211,7 +245,7 @@ function MergeDialog({
   );
 }
 
-function PersonPhotos({
+function PersonClusters({
   person,
   onEdit,
   onMerge,
@@ -220,17 +254,12 @@ function PersonPhotos({
   onEdit: (p: PersonDTO) => void;
   onMerge: (p: PersonDTO) => void;
 }) {
-  const [preview, setPreview] = useState<AssetDTO | null>(null);
-  const { data, isFetching } = useQuery({
-    queryKey: ["person-photos", person.id],
-    queryFn: () => api.assets(undefined, { personId: person.id }),
-  });
-  const items = data?.items ?? [];
+  const clusters = person.clusters ?? [];
   return (
     <div className="mt-8">
       <div className="mb-3 flex items-baseline gap-3">
-        <h2 className="text-lg font-semibold">「{person.name}」的照片</h2>
-        <span className="text-sm text-neutral-500">{items.length} 个文件</span>
+        <h2 className="text-lg font-semibold">「{person.name}」的识别组</h2>
+        <span className="text-sm text-neutral-500">{clusters.length} 个识别组</span>
         <button
           onClick={() => onEdit(person)}
           className="ml-auto rounded bg-brand-50 px-2 py-1 text-xs text-brand-600 hover:bg-brand-100 dark:bg-brand-900/40 dark:text-brand-300"
@@ -246,51 +275,83 @@ function PersonPhotos({
           合并
         </button>
       </div>
-      <div className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-        {items.map((a) => (
-          <button
-            key={a.id}
-            onClick={() => setPreview(a)}
-            className="group relative m-[2px] aspect-[4/3] overflow-hidden rounded-sm bg-neutral-200 dark:bg-neutral-800"
-          >
-            {a.media_type === "image" ? (
-              <img
-                src={`/api/assets/${a.id}/file`}
-                alt=""
-                loading="lazy"
-                className="h-full w-full object-cover transition group-hover:scale-105"
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = "none";
-                }}
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center text-neutral-400">
-                <span className="text-xs font-medium">{mediaLabel(a.media_type)}</span>
+      {clusters.length === 0 ? (
+        <p className="mt-4 text-center text-neutral-400">该人物暂无识别组</p>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {clusters.map((c) => (
+            <Link
+              key={c.id}
+              to={`/clusters/${c.id}`}
+              className="flex items-center gap-3 rounded-lg border border-neutral-200 bg-white p-3 transition hover:border-brand-500 hover:bg-brand-50 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:border-brand-500 dark:hover:bg-brand-900/40"
+            >
+              <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-neutral-100 dark:bg-neutral-800">
+                <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                  {SOURCE_LABEL[c.source_plugin_id] ?? c.source_plugin_id}
+                </span>
               </div>
-            )}
-          </button>
-        ))}
-      </div>
-      {items.length === 0 && !isFetching && (
-        <p className="mt-4 text-center text-neutral-400">该人物暂无照片</p>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium text-neutral-900 dark:text-neutral-100">
+                  {c.name}
+                </div>
+                <div className="text-xs text-neutral-500">
+                  {c.face_count} 张人脸 · 半径 {c.radius.toFixed(3)}
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
       )}
-      {preview && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
-          onClick={() => setPreview(null)}
+    </div>
+  );
+}
+
+function UnassignedClusters() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["clusters", { unassigned: true }],
+    queryFn: () => api.clusters({ unassigned: true }),
+  });
+  const items = data?.items ?? [];
+  return (
+    <div className="mt-8">
+      <div className="mb-3 flex items-baseline gap-3">
+        <h2 className="text-lg font-semibold">未归入人物的识别组</h2>
+        <span className="text-sm text-neutral-500">{items.length} 个</span>
+        <button
+          onClick={() => qc.invalidateQueries({ queryKey: ["clusters"] })}
+          className="ml-auto rounded bg-neutral-100 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
         >
-          <img
-            src={`/api/assets/${preview.id}/file`}
-            alt={preview.path}
-            className="max-h-[90vh] max-w-full object-contain"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <Link
-            to={`/asset/${preview.id}`}
-            className="absolute right-4 top-4 rounded-full bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/20"
-          >
-            详情
-          </Link>
+          刷新
+        </button>
+      </div>
+      {isLoading ? (
+        <p className="mt-4 text-center text-neutral-400">加载中…</p>
+      ) : items.length === 0 ? (
+        <p className="mt-4 text-center text-neutral-400">暂无未归类的识别组</p>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {items.map((c) => (
+            <Link
+              key={c.id}
+              to={`/clusters/${c.id}`}
+              className="flex items-center gap-3 rounded-lg border border-neutral-200 bg-white p-3 transition hover:border-brand-500 hover:bg-brand-50 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:border-brand-500 dark:hover:bg-brand-900/40"
+            >
+              <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-neutral-100 dark:bg-neutral-800">
+                <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                  {SOURCE_LABEL[c.source_plugin_id] ?? c.source_plugin_id}
+                </span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium text-neutral-900 dark:text-neutral-100">
+                  {c.name}
+                </div>
+                <div className="text-xs text-neutral-500">
+                  {c.face_count} 张人脸 · 半径 {c.radius.toFixed(3)}
+                </div>
+              </div>
+            </Link>
+          ))}
         </div>
       )}
     </div>
@@ -298,7 +359,10 @@ function PersonPhotos({
 }
 
 export default function PersonsPage() {
-  const { data, isLoading } = useQuery({ queryKey: ["persons"], queryFn: api.persons });
+  const { data, isLoading } = useQuery({
+    queryKey: ["persons", { includeClusters: true }],
+    queryFn: () => api.persons(true),
+  });
   const [editing, setEditing] = useState<PersonDTO | null>(null);
   const [merging, setMerging] = useState<PersonDTO | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -310,7 +374,7 @@ export default function PersonsPage() {
     <div className="p-4 md:p-6">
       <h1 className="text-xl font-semibold">人物</h1>
       <p className="mt-1 text-sm text-neutral-500">
-        按人脸自动归组。点击人物查看其照片，可命名并反扫相似人脸，或将未命名人物合并进来。
+        按识别组自动归组。点击人物查看其识别组，进入后可看到具体人脸并完成命名、合并、删除。
       </p>
 
       {isLoading ? (
@@ -333,12 +397,14 @@ export default function PersonsPage() {
       )}
 
       {selected && (
-        <PersonPhotos
+        <PersonClusters
           person={selected}
           onEdit={setEditing}
           onMerge={setMerging}
         />
       )}
+
+      <UnassignedClusters />
 
       {editing && <EditDialog person={editing} onClose={() => setEditing(null)} />}
       {merging && <MergeDialog person={merging} onClose={() => setMerging(null)} />}
