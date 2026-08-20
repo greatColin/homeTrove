@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from hometrove.config import get_settings
 from hometrove.db import get_db
-from hometrove.models import Album, AlbumAsset, Asset, AsrTranscript, FaceEmbedding, PluginResult
+from hometrove.models import Album, AlbumAsset, Asset, AsrTranscript, FaceCluster, FaceEmbedding, PluginResult
 from hometrove.smart_albums import _place_ids as _smart_place_ids
 from hometrove import trash as _trash
 from hometrove.vault.paths import vault_keyframe_path, vault_thumbnail_path
@@ -54,10 +54,16 @@ def _facet_asset_ids(session: Session, facet: str, value: str) -> list[int]:
 
 
 def _person_asset_ids(session: Session, person_id: int) -> list[int]:
+    """Return asset ids touched by any cluster under ``person_id``.
+
+    Goes through the cluster → face indirection so faces emitted by the
+    v2 plugin pipeline (which only set ``cluster_id``) are still findable
+    via the person filter used by the assets listing endpoint.
+    """
     rows = session.execute(
-        select(FaceEmbedding.asset_id).where(
-            FaceEmbedding.person_id == person_id
-        )
+        select(FaceEmbedding.asset_id)
+        .join(FaceCluster, FaceCluster.id == FaceEmbedding.cluster_id)
+        .where(FaceCluster.person_id == person_id)
     ).scalars().all()
     return list(rows)
 

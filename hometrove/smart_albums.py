@@ -21,7 +21,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hometrove.models import Asset, FaceEmbedding, PluginResult
+from hometrove.models import Asset, FaceCluster, FaceEmbedding, PluginResult
 
 _ALLOWED_OPS = frozenset(
     {"and", "or", "person", "place", "tag", "category", "time", "media_type", "favorite"}
@@ -95,9 +95,9 @@ def eval_rule(session: Session, rule: dict[str, Any]) -> list[int]:
 
         if op == "person":
             rows = session.execute(
-                select(FaceEmbedding.asset_id).where(
-                    FaceEmbedding.person_id == node["person_id"]
-                )
+                select(FaceEmbedding.asset_id)
+                .join(FaceCluster, FaceCluster.id == FaceEmbedding.cluster_id)
+                .where(FaceCluster.person_id == node["person_id"])
             ).scalars().all()
             return set(rows)
 

@@ -111,12 +111,17 @@ class Job(Base):
 
 
 class Person(Base):
-    """A person the face matcher has grouped faces under.
+    """A user-named person in the library.
 
-    ``name`` is a display label — auto-created entries get an opaque
-    ``未命名-<rand>`` label until the user edits it. ``info_json`` is a free
-    JSON document for operator-managed attributes (height, age, notes, …) that
-    lives independently of the tag system.
+    ``name`` is the display label. ``info_json`` is a free JSON document for
+    operator-managed attributes (height, age, notes, …) that lives
+    independently of the tag system.
+
+    A person is no longer directly tied to ``FaceEmbedding`` rows; instead
+    it links to ``FaceCluster`` rows which themselves aggregate faces
+    emitted by a single recognition plugin+model. This indirection keeps
+    cross-plugin data isolated — switching recognition models never mixes
+    vectors from different spaces.
     """
 
     __tablename__ = "persons"
@@ -127,18 +132,82 @@ class Person(Base):
     created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
 
-    faces: Mapped[list["FaceEmbedding"]] = relationship(
+    clusters: Mapped[list["FaceCluster"]] = relationship(
         back_populates="person",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
 
 
+class FaceEmbeddingModel(Base):
+    """Catalogue of registered face recognition models.
+
+    The single occupant today is InsightFace ``buffalo_l`` (ArcFace R100,
+    512-dim L2-normalized). New models are appended when a future pack is
+    adopted; switching ``is_active`` controls which model new faces are
+    matched against.
+    """
+
+    __tablename__ = "face_embedding_models"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+
+class FaceCluster(Base):
+    """A group of faces detected by one plugin+model that auto-cluster
+    into the same identity.
+
+    ``centroid_blob`` stores the cluster's running-mean vector as raw
+    float32 bytes (``np.ndarray.tobytes()``) for cheap binary I/O.
+    ``representative_face_id`` is set once ``face_count >= MIN_FACES``
+    (default 3) so noise clusters don't surface in the UI.
+    """
+
+    __tablename__ = "face_clusters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("persons.id", ondelete="SET NULL"),
+    )
+    source_plugin_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source_model_name: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    centroid_blob: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    radius: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    face_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    representative_face_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("face_embeddings.id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
+
+    person: Mapped[Optional[Person]] = relationship(back_populates="clusters")
+    faces: Mapped[list["FaceEmbedding"]] = relationship(
+        back_populates="cluster",
+        foreign_keys="FaceEmbedding.cluster_id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        Index("idx_face_clusters_person", "person_id"),
+        Index(
+            "idx_face_clusters_source_plugin_model",
+            "source_plugin_id",
+            "source_model_name",
+        ),
+    )
+
+
 class FaceEmbedding(Base):
-    """One detected face: its vector and the person it was matched to.
+    """One detected face: its vector, source metadata, and cluster link.
 
     ``embedding_json`` holds the raw detection vector (list[float]) — the
     detector emits only vectors, never names; names come from ``persons``.
+    ``person_id`` is kept for legacy callers that traverse Person→faces
+    directly; new code goes Person→cluster→faces.
     """
 
     __tablename__ = "face_embeddings"
@@ -155,12 +224,35 @@ class FaceEmbedding(Base):
     box_json: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=_now)
 
-    person: Mapped[Optional[Person]] = relationship(back_populates="faces")
+    # v2 fields
+    cluster_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("face_clusters.id", ondelete="SET NULL"),
+    )
+    source_plugin_id: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_model_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    frame_index: Mapped[Optional[int]] = mapped_column(Integer)
+    frame_t: Mapped[Optional[float]] = mapped_column(Float)
+
+    person: Mapped[Optional[Person]] = relationship(
+        foreign_keys=[person_id],
+        overlaps="clusters",
+    )
+    cluster: Mapped[Optional["FaceCluster"]] = relationship(
+        back_populates="faces",
+        foreign_keys=[cluster_id],
+        overlaps="person",
+    )
     asset: Mapped[Asset] = relationship()
 
     __table_args__ = (
         Index("idx_face_embeddings_person", "person_id"),
         Index("idx_face_embeddings_asset", "asset_id"),
+        Index("idx_face_embeddings_cluster", "cluster_id"),
+        Index(
+            "idx_face_embeddings_source_plugin_model",
+            "source_plugin_id",
+            "source_model_name",
+        ),
     )
 
 

@@ -3,7 +3,7 @@
 > 关联设计文档：`.monkeycode/specs/v2-face-recognition/design.md`
 > 关联需求文档：`.monkeycode/specs/v2-face-recognition/requirements.md`
 
-- [ ] 1. 数据库 schema 改造（迁移）
+- [x] 1. 数据库 schema 改造（迁移）
    - 新建 `alembic/versions/0011_face_recognition_v2.py`
      - `RENAME TABLE face_embeddings -> faces`
      - `ALTER TABLE faces ADD COLUMN cluster_id, source_plugin_id, source_model_name, frame_index, frame_t`

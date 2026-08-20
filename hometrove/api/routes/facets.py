@@ -53,14 +53,14 @@ def facets(session: Session = Depends(get_db)):
         cat_rows, lambda d: [d.get("category")] + ([d.get("subcategory")] if d.get("subcategory") else [])
     )
 
-    # Persons are matched people, not detected names: count each person by the
-    # number of faces grouped under them, keyed by person id.
-    from hometrove.models import Person
+    # Persons are matched people, not detected names: count each person by
+    # the total face count across their clusters, keyed by person id.
+    from hometrove.models import FaceCluster, Person
     persons = session.execute(select(Person)).scalars().all()
-    persons_map = {
-        str(p.id): len(p.faces)
-        for p in persons
-        if p.faces
-    }
+    persons_map: dict[str, int] = {}
+    for p in persons:
+        total = sum(c.face_count for c in p.clusters)
+        if total > 0:
+            persons_map[str(p.id)] = total
 
     return {"tags": tags, "categories": categories, "persons": persons_map}
