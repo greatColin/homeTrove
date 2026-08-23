@@ -135,6 +135,7 @@ export interface JobItem {
   enqueued_at: number | null;
   started_at: number | null;
   finished_at: number | null;
+  result: Record<string, unknown> | string | null;
 }
 
 export interface FileJobItem {
@@ -181,6 +182,7 @@ export interface ClusterSummaryDTO {
   source_model_name: string;
   face_count: number;
   radius: number;
+  representative_face?: FaceDTO | null;
 }
 
 export interface ClusterDTO extends ClusterSummaryDTO {
@@ -427,7 +429,7 @@ export const api = {
   retryJob: (id: number) =>
     request<{ ok: boolean }>(`/jobs/${id}/retry`, { method: "POST" }),
   scan: () =>
-    request<{ new: number; skipped: number; enqueued: number }>("/scan", {
+    request<{ new: number; skipped: number; note?: string }>("/scan", {
       method: "POST",
     }),
   folders: () => request<FolderResponse>("/folders"),
@@ -441,6 +443,8 @@ export const api = {
     ),
   updatePerson: (id: number, body: Record<string, unknown>) =>
     request<PersonDTO>(`/persons/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  createPerson: (name: string) =>
+    request<PersonDTO>("/persons", { method: "POST", body: JSON.stringify({ name }) }),
   mergePersons: (keepId: number, removeId: number) =>
     request<{ ok: boolean; moved: number }>("/persons/merge", {
       method: "POST",
@@ -622,4 +626,43 @@ export function publicThumbUrl(token: string, assetId: number, size: "small" | "
 
 export function publicFileUrl(token: string, assetId: number): string {
   return `/api/public/files/${token}/${assetId}`;
+}
+
+export interface PersonMatchDTO {
+  person_id: number | null;
+  name: string;
+  avg_score: number;
+  matched_count: number;
+  representative_face_asset_id: number | null;
+  cluster_id: number | null;
+}
+
+export interface FaceMatchResultDTO {
+  det_score: number;
+  bbox: number[];
+  matches: PersonMatchDTO[];
+}
+
+export interface RecognizeResult {
+  faces: FaceMatchResultDTO[];
+  total_detected: number;
+}
+
+export async function recognizeFace(file: File, top_k = 5, score_threshold = 0.3): Promise<RecognizeResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("top_k", String(top_k));
+  form.append("score_threshold", String(score_threshold));
+  const res = await fetch("/api/faces/recognize", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body.detail ?? JSON.stringify(body);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`${res.status}: ${detail}`);
+  }
+  return res.json();
 }

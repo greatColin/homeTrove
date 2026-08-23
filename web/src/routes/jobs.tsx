@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { api, mediaLabel, type FileJobItem, type JobStats } from "../lib/api";
 
@@ -44,6 +44,7 @@ export default function Jobs() {
   useJobSSE();
   const { data } = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, refetchInterval: 3000 });
   const qc = useQueryClient();
+  const [expanded, setExpanded] = useState<number | null>(null);
   const retry = useMutation({
     mutationFn: async (item: FileJobItem) => {
       const failed = item.jobs.filter((j) => j.state === "failed");
@@ -105,49 +106,110 @@ export default function Jobs() {
           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
             {items.map((item) => {
               const failedJobs = item.jobs.filter((j) => j.state === "failed");
+              const isOpen = expanded === item.asset_id;
               return (
-                <tr key={item.asset_id}>
-                  <td className="max-w-[280px] truncate px-3 py-2 font-medium">
-                    {item.filename}
-                  </td>
-                  <td className="px-3 py-2 text-neutral-500">
-                    {item.media_type ? mediaLabel(item.media_type) : "–"}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-xs ${
-                        item.state === "done"
-                          ? "bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300"
-                          : item.state === "failed"
-                            ? "bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300"
-                            : "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
-                      }`}
-                    >
-                      {item.state === "active"
-                        ? "索引中"
-                        : item.state === "failed"
-                          ? "失败"
-                          : "完成"}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-neutral-500">
-                    {item.jobs.map((j) => j.plugin_id).join(", ")}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-neutral-500">
-                    {fmt(item.enqueued_at)}
-                  </td>
-                  <td className="px-3 py-2">
-                    {failedJobs.length > 0 && (
-                      <button
-                        onClick={() => retry.mutate(item)}
-                        disabled={retry.isPending}
-                        className="rounded bg-brand-500 px-2 py-1 text-xs text-white hover:bg-brand-600 disabled:opacity-50"
+                <>
+                  <tr key={item.asset_id} className="cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-900" onClick={() => setExpanded(isOpen ? null : item.asset_id)}>
+                    <td className="max-w-[280px] truncate px-3 py-2 font-medium">
+                      {item.filename}
+                    </td>
+                    <td className="px-3 py-2 text-neutral-500">
+                      {item.media_type ? mediaLabel(item.media_type) : "–"}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-xs ${
+                          item.state === "done"
+                            ? "bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300"
+                            : item.state === "failed"
+                              ? "bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300"
+                              : "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
+                        }`}
                       >
-                        重试
-                      </button>
-                    )}
-                  </td>
-                </tr>
+                        {item.state === "active"
+                          ? "索引中"
+                          : item.state === "failed"
+                            ? "失败"
+                            : "完成"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs text-neutral-500">
+                      {item.jobs.length} 个插件 {isOpen ? "▲" : "▼"}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-neutral-500">
+                      {fmt(item.enqueued_at)}
+                    </td>
+                    <td className="px-3 py-2">
+                      {failedJobs.length > 0 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            retry.mutate(item);
+                          }}
+                          disabled={retry.isPending}
+                          className="rounded bg-brand-500 px-2 py-1 text-xs text-white hover:bg-brand-600 disabled:opacity-50"
+                        >
+                          重试
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr key={`${item.asset_id}-expanded`}>
+                      <td colSpan={6} className="bg-neutral-50 px-4 py-3 dark:bg-neutral-900">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="text-neutral-400">
+                              <th className="pb-1 pr-4 font-medium">插件</th>
+                              <th className="pb-1 pr-4 font-medium">状态</th>
+                              <th className="pb-1 pr-4 font-medium">耗时(s)</th>
+                              <th className="pb-1 pr-4 font-medium">错误信息</th>
+                              <th className="pb-1 font-medium">结果详情</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {item.jobs.map((j) => (
+                              <tr key={j.id} className="border-t border-neutral-200 dark:border-neutral-800">
+                                <td className="pr-4 py-1 font-mono text-neutral-600 dark:text-neutral-300">{j.plugin_id}</td>
+                                <td className="pr-4 py-1">
+                                  <span className={`rounded px-1.5 py-0.5 ${
+                                    j.state === "done" ? "bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300" :
+                                    j.state === "failed" ? "bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300" :
+                                    j.state === "running" ? "bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300" :
+                                    "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                                  }`}>
+                                    {j.state === "pending" ? "待处理" : j.state === "running" ? "运行中" : j.state === "done" ? "完成" : "失败"}
+                                  </span>
+                                </td>
+                                <td className="pr-4 py-1 text-neutral-500">
+                                  {j.actual_cost != null ? j.actual_cost.toFixed(2) : "–"}
+                                </td>
+                                <td className="pr-4 py-1 max-w-[200px] truncate">
+                                  {j.state === "failed" && j.error ? (
+                                    <span className="text-red-500" title={j.error}>{j.error}</span>
+                                  ) : (
+                                    <span className="text-neutral-300">–</span>
+                                  )}
+                                </td>
+                                <td className="py-1 max-w-[300px]">
+                                  {j.state === "done" && j.result ? (
+                                    <span className="whitespace-pre-wrap text-neutral-600 dark:text-neutral-300">
+                                      {typeof j.result === "string"
+                                        ? j.result
+                                        : JSON.stringify(j.result, null, 2)}
+                                    </span>
+                                  ) : (
+                                    <span className="text-neutral-300">–</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </>
               );
             })}
           </tbody>

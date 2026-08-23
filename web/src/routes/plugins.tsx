@@ -523,6 +523,9 @@ export default function Plugins() {
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.setPluginEnabled(id, enabled),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["plugins"] }),
+    onError: (e: unknown) => {
+      alert(`操作失败：${e instanceof Error ? e.message : String(e)}`);
+    },
   });
 
 

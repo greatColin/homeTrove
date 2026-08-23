@@ -162,6 +162,28 @@ class MergePersons(BaseModel):
     remove_id: int
 
 
+class CreatePerson(BaseModel):
+    name: str
+
+
+@router.post("")
+def create_person(body: CreatePerson, session: Session = Depends(get_db)):
+    """Create a new person with the given name.
+
+    Use this to seed a person before assigning clusters to them,
+    or to create a person from an unassigned cluster's face.
+    """
+    person = Person(name=body.name.strip() or "未命名")
+    session.add(person)
+    session.flush()
+    session.commit()
+    return _person_dto(
+        person,
+        face_count=0,
+        cluster_count=0,
+    )
+
+
 @router.post("/merge")
 def merge(body: MergePersons, session: Session = Depends(get_db)):
     try:

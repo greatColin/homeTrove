@@ -68,7 +68,22 @@ def _aggregate_state(jobs: list) -> str:
     return "done"
 
 
-def _job_dto(j: Job) -> dict:
+def _job_dto(j: Job, session: Session) -> dict:
+    result_json = None
+    if j.state == "done":
+        from hometrove.models import PluginResult
+
+        pr = session.execute(
+            select(PluginResult).where(
+                PluginResult.asset_id == j.asset_id,
+                PluginResult.plugin_id == j.plugin_id,
+            )
+        ).scalars().first()
+        if pr is not None and pr.result_json:
+            try:
+                result_json = json.loads(pr.result_json)
+            except Exception:  # noqa: BLE001
+                result_json = pr.result_json
     return {
         "id": j.id,
         "plugin_id": j.plugin_id,
@@ -80,6 +95,7 @@ def _job_dto(j: Job) -> dict:
         "enqueued_at": j.enqueued_at,
         "started_at": j.started_at,
         "finished_at": j.finished_at,
+        "result": result_json,
     }
 
 
@@ -107,7 +123,7 @@ def list_jobs(limit: int = 100, session: Session = Depends(get_db)):
                 "media_type": a.media_type if a is not None else None,
                 "state": _aggregate_state(jobs),
                 "enqueued_at": latest.enqueued_at,
-                "jobs": [_job_dto(j) for j in jobs],
+                "jobs": [_job_dto(j, session) for j in jobs],
             }
         )
     items.sort(key=lambda x: x["enqueued_at"] or 0, reverse=True)

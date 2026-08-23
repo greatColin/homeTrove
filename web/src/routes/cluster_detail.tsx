@@ -10,17 +10,28 @@ import {
 } from "../lib/api";
 
 function FaceThumb({ face }: { face: FaceDTO }) {
+  const isVideo = face.source_plugin_id === "face.video";
   return (
     <div className="group relative m-[2px] aspect-[4/3] overflow-hidden rounded-sm bg-neutral-200 dark:bg-neutral-800">
-      <img
-        src={`/api/assets/${face.asset_id}/file`}
-        alt=""
-        loading="lazy"
-        className="h-full w-full object-cover transition group-hover:scale-105"
-        onError={(e) => {
-          (e.currentTarget as HTMLImageElement).style.display = "none";
-        }}
-      />
+      {isVideo ? (
+        <video
+          src={`/api/assets/${face.asset_id}/file`}
+          className="h-full w-full object-cover transition group-hover:scale-105"
+          onError={(e) => {
+            (e.currentTarget as HTMLVideoElement).style.display = "none";
+          }}
+        />
+      ) : (
+        <img
+          src={`/api/assets/${face.asset_id}/file`}
+          alt=""
+          loading="lazy"
+          className="h-full w-full object-cover transition group-hover:scale-105"
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.display = "none";
+          }}
+        />
+      )}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-1 text-[10px] text-white">
         {face.frame_index != null && (
           <span>帧 {face.frame_index} · t={face.frame_t?.toFixed(2)}s</span>
